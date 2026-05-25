@@ -28,12 +28,16 @@ MANIFEST
 *.swo
 
 # 环境相关
+.venv/
 venv/
 env/
 .env
 __pycache__/
 *.pyc
 *.pyc.*
+
+# 本地配置（生产/个人环境会覆盖密钥、端口、extension 配置）
+/config/setting.toml
 
 # 日志文件（运行时生成，避免影响提交）
 /app.log
@@ -49,3 +53,12 @@ __pycache__/
 /data/*.db
 /data/*.db-shm
 /data/*.db-wal
+
+# 临时备份和本地恢复文件
+*.bak
+*.bak-*
+*.bak.*
+*.local-untracked-*
+
+# 运行时媒体缓存
+/static/assets/veo_image_cache/

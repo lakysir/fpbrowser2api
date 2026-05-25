@@ -57,7 +57,13 @@ python main.py
 - 用户名：`admin`
 - 密码：`admin`
 
-基础配置位于 `config/setting.toml`（可参考 `config/setting_example.toml`）。服务启动后会把关键配置写入数据库，并支持在管理后台中修改，重启后仍生效。
+基础配置使用本地文件 `config/setting.toml`。首次部署时先复制示例配置：
+
+```bash
+cp config/setting_example.toml config/setting.toml
+```
+
+服务启动后会把关键配置写入数据库，并支持在管理后台中修改，重启后仍生效。`config/setting.toml` 和 `data/fpbrowser.db` 属于本地运行状态，不提交到仓库。
 
 ## 启动 / 停止 / 重启（服务脚本）
 
