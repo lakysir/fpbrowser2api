@@ -1040,7 +1040,10 @@ def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
     return out
 
 
-PROXY_IMPORT_CHECK_CHANNEL = "IPRust.io"
+# RoxyBrowser /proxy/create 的 checkChannel 要传渠道的 value(URL),不是 label。
+# 之前填 "IPRust.io"(label)→ RoxyBrowser 报 "checkChannel参数值错误"(code 101),导致任何导入都建不成。
+# value 来自 /proxy/detect_channel(IPRust.io 对应 http://iprust.io/ip.json)。
+PROXY_IMPORT_CHECK_CHANNEL = "http://iprust.io/ip.json"
 PROXY_IMPORT_DEFAULT_PROTOCOL = "SOCKS5"
 
 

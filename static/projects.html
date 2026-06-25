@@ -235,7 +235,13 @@
               <label class="form-label small mb-1">批量导入/更新代理（格式：IP地址:端口:账号:密码，每行一个）</label>
               <textarea class="form-control form-control-sm mono" id="proxiesImportText" rows="5" placeholder="138.226.69.92:5283:username:password&#10;138.226.60.37:6710:username:password"></textarea>
               <div class="d-flex flex-wrap justify-content-end align-items-center gap-2 mt-2">
-                <span class="text-muted small me-auto" id="proxyImportSummary">按 IP 匹配本地 DB；存在则同步修改指纹浏览器代理并刷新创建时间，不存在则先创建到指纹浏览器；新代理默认协议 SOCKS5。</span>
+                <span class="text-muted small me-auto" id="proxyImportSummary">按 IP 匹配本地 DB；存在则同步修改指纹浏览器代理并刷新创建时间，不存在则先创建到指纹浏览器。</span>
+                <label class="small mb-0">协议</label>
+                <select class="form-select form-select-sm" id="proxyImportProtocol" style="width:auto;">
+                  <option value="SOCKS5">SOCKS5</option>
+                  <option value="HTTP">HTTP</option>
+                  <option value="HTTPS">HTTPS</option>
+                </select>
                 <button class="btn btn-success btn-sm" id="btnImportProxies">批量导入/更新</button>
               </div>
             </div>
@@ -4203,13 +4209,14 @@
         if (!content) return toast("请先粘贴代理数据", "error");
         const lines = content.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
         if (!lines.length) return toast("请先粘贴代理数据", "error");
-        if (!confirm(`确定导入/更新 ${lines.length} 行代理吗？\n\n格式：IP地址:端口:账号:密码\n检测渠道将统一使用 IPRust.io\n新代理默认协议：SOCKS5`)) return;
+        const protocol = String(document.getElementById("proxyImportProtocol")?.value || "SOCKS5").toUpperCase();
+        if (!confirm(`确定导入/更新 ${lines.length} 行代理吗？\n\n格式：IP地址:端口:账号:密码\n检测渠道将统一使用 IPRust.io\n协议：${protocol}`)) return;
         try {
           setProxiesLoading(true);
           if (proxyImportSummary) proxyImportSummary.textContent = `正在导入/更新 ${lines.length} 行代理...`;
           const r = await adminFetch(`/api/admin/spaces/${spk}/proxies/import`, {
             method: "POST",
-            body: JSON.stringify({ content }),
+            body: JSON.stringify({ content, protocol }),
           });
           if (!r) return;
           const d = await r.json();
