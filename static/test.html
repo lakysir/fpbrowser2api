@@ -23,17 +23,9 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
-          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
-          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
-          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
-          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
-          <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
-        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_club</span></span>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -48,12 +40,6 @@
               <div class="mb-3">
                 <label class="form-label">任务类型</label>
                 <select class="form-select" id="taskType"></select>
-              </div>
-              <div class="mb-3">
-                <label class="form-label">卡密（可选）</label>
-                <select class="form-select mono" id="cardKeySelect">
-                  <option value="">不使用卡密</option>
-                </select>
               </div>
               <div class="mb-3">
                 <label class="form-label">执行窗口（可选）</label>
@@ -152,7 +138,6 @@
       const LS_PREFIX = "fpbrowser2api.admin.";
       const LS_KEYS = {
         testTaskType: `${LS_PREFIX}test.task_type_code`,
-        testCardKeyId: `${LS_PREFIX}test.card_key_id`,
         testPrompt: `${LS_PREFIX}test.prompt`,
         testVideoUrl: `${LS_PREFIX}test.video_url`,
         testFirstImageUrl: `${LS_PREFIX}test.first_image_url`,
@@ -181,7 +166,6 @@
       let autoPollEnabled = true; // 提交任务默认自动轮询；手动“查询”则视为单次查询
 
       let taskTypeByCode = new Map(); // code -> {id, code, name, ...}
-      let cardKeys = []; // [{id, card_key, sort_order, ...}]
 
       async function loadApiKey() {
         const r = await adminFetch("/api/admin/system-config");
@@ -203,29 +187,6 @@
         const saved = lsGet(LS_KEYS.testTaskType);
         if (saved && Array.from(sel.options).some(o => o.value === saved)) {
           sel.value = saved;
-        }
-      }
-
-      async function loadCardKeys() {
-        const sel = document.getElementById("cardKeySelect");
-        if (!sel) return;
-        const r = await adminFetch("/api/admin/card-keys");
-        if (!r) return;
-        const d = await r.json();
-        const items = Array.isArray(d.items) ? d.items : [];
-        cardKeys = items;
-        const options = items.map((x, idx) => {
-          const id = Number(x.id || 0);
-          const key = String(x.card_key || "");
-          return `<option value="${escapeHtml(String(id))}">${idx + 1}. ${escapeHtml(key)}</option>`;
-        });
-        sel.innerHTML = `<option value="">不使用卡密</option>${options.join("")}`;
-
-        const saved = lsGet(LS_KEYS.testCardKeyId);
-        if (saved && Array.from(sel.options).some(o => o.value === saved)) {
-          sel.value = saved;
-        } else {
-          sel.value = "";
         }
       }
 
@@ -321,7 +282,6 @@
           const videoUrl = document.getElementById("videoUrl").value.trim();
           const firstImageUrl = document.getElementById("firstImageUrl").value.trim();
           const dreaminaImageUploadWorkflow = document.getElementById("dreaminaImageUploadWorkflow")?.checked === true;
-          const cardKeyIdRaw = (document.getElementById("cardKeySelect")?.value || "").trim();
           const durationRaw = document.getElementById("duration").value.trim();
           const duration = durationRaw ? Number(durationRaw) : undefined;
           const videoModel = (document.getElementById("videoModel")?.value || "").trim();
@@ -336,11 +296,6 @@
             payload.image_url = firstImageUrl;
           } else if (firstImageUrl) {
             payload.first_image_url = firstImageUrl;
-          }
-          if (cardKeyIdRaw) {
-            const selected = cardKeys.find(x => String(x.id) === String(cardKeyIdRaw));
-            if (!selected || !selected.card_key) throw new Error("所选卡密不存在，请刷新后重试");
-            payload.card_key = String(selected.card_key);
           }
           if (duration !== undefined && !Number.isNaN(duration)) payload.duration = duration;
           if (videoModel) payload.video_model = videoModel;
@@ -527,18 +482,8 @@
           });
         }
 
-        const cardKeyEl = document.getElementById("cardKeySelect");
-        if (cardKeyEl) {
-          cardKeyEl.addEventListener("change", (e) => {
-            const v = (e.target.value || "").trim();
-            if (v) lsSet(LS_KEYS.testCardKeyId, v);
-            else lsDel(LS_KEYS.testCardKeyId);
-          });
-        }
-
         await loadApiKey();
         await loadTaskTypes();
-        await loadCardKeys();
         // 初始载入：根据当前任务类型拉取窗口列表
         await loadTaskWindows((document.getElementById("taskType")?.value || "").trim());
 

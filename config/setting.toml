@@ -1,11 +1,11 @@
 [server]
 host = "0.0.0.0"
-port = 8000
+port = 8002
 
 [global]
 admin_username = "admin"
 admin_password = "admin"
-api_key = "mirrmart_sora2_880315"
+api_key = "fpb-flow-local-2026"
 
 [system]
 proxy_enabled = false
@@ -16,7 +16,7 @@ log_to_file = false
 [extension_executor]
 # 是否全局默认使用浏览器插件执行器；false 时可在单个任务 payload 里传 executor="extension" 启用
 enabled = true
-base_url = "127.0.0.1:8000"
+base_url = "192.168.43.131:8002"
 # 指纹浏览器插件连接 Python 后端的 WebSocket 地址为f"ws://{base_url}/api/extension/ws"
 # 插件配置中转页：Python 先打开f"http://{base_url}/"页面写入 fpb_* 与 redirect_url，插件连接 WS 后再跳转目标站点。
 # 可选鉴权 token；留空则不校验

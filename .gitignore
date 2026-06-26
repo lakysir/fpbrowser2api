@@ -50,3 +50,6 @@ __pycache__/
 /data/*.db
 /data/*.db-shm
 /data/*.db-wal
+
+.DS_Store
+_author_db_backup/

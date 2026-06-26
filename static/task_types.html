@@ -36,11 +36,11 @@
       }
       .mapping-table th.col-proxy,
       .mapping-table td.col-proxy {
-        width: 420px;
-        min-width: 420px;
+        width: 200px;
+        min-width: 200px;
       }
       .mapping-table [data-role="proxySelect"] {
-        min-width: 400px !important;
+        min-width: 180px !important;
       }
       .mapping-table [data-role="proxyDisplay"] {
         display: block;
@@ -147,17 +147,9 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
-          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
-          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
-          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
-          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
-          <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
-        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_club</span></span>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -335,7 +327,29 @@
                 </div>
               </div>
               <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-1">
-                <div class="small text-muted" data-role="mapping-page-info">总计 0 条 · 第 0/0 页</div>
+                <div class="d-flex align-items-center gap-3">
+                  <div class="small text-muted" data-role="mapping-page-info">总计 0 条 · 第 0/0 页</div>
+                  <div class="dropdown">
+                    <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">更多列</button>
+                    <div class="dropdown-menu p-2 shadow" style="min-width: 260px;">
+                      <label class="d-flex align-items-center gap-2 small fw-semibold mb-1"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="all"> 显示全部列</label>
+                      <hr class="my-1">
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.2rem .8rem;">
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="4"> 备注</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="8"> 草稿数</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="9"> 空间名称</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="10"> 会员信息</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="12"> 测IP</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="13"> 内核</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="16"> 冷却中</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="17"> 占用</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="18"> 无头</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="19"> 纯净</label>
+                      <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 mcol-pick" data-col="20"> 操作</label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 <div class="d-flex flex-wrap gap-2 align-items-center">
                   <label class="small text-muted mb-0" for="mappingPageSizeTop">每页</label>
                   <select class="form-select form-select-sm mapping-page-size" id="mappingPageSizeTop" style="width: 90px;">
@@ -3268,26 +3282,23 @@
                 <input class="form-check-input enabled-switch" type="checkbox" role="switch" data-role="enabledSwitch" data-mid="${m.id}" data-space_pk="${m.space_pk || ''}" data-window_key="${m.window_key || ''}" ${m.enabled ? 'checked' : ''} title="切换启用状态">
               </div>
             </td>
-            <td style="width: 80px; min-width: 80px;">
-              <div class="d-flex flex-wrap gap-2 align-items-center">
-                <span class="badge text-bg-light mono border">
-                  #${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")}
-                  <button
-                    type="button"
-                    class="btn btn-link btn-sm p-0 align-baseline mono text-decoration-none"
-                    data-role="accountEdit"
-                    data-mid="${escapeHtml(String(m.id ?? ""))}"
-                    title="Edit account password and EFA"
-                  >${escapeHtml(m.platform_username || m.platform_account || "-")}</button>
+            <td class="win-cell">
+              <div class="d-flex align-items-center gap-2 flex-nowrap">
+                <span class="badge text-bg-light mono border win-name-pill" title="#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")}">
+                  <span class="win-name-text">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")}</span>
+                  <button type="button" class="btn btn-link btn-sm p-0 align-baseline mono text-decoration-none win-acc" data-role="accountEdit" data-mid="${escapeHtml(String(m.id ?? ""))}" title="${escapeHtml(m.platform_username || m.platform_account || "-")}（点击编辑账号/EFA）">${escapeHtml(String(m.platform_username || m.platform_account || "-").split("@")[0])}</button>
                 </span>
-                <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
-                  <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
-
-                  <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="Open 2FA" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-key" aria-hidden="true"></i><span class="visually-hidden">Open 2FA</span></button>
-                  <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
-                  <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
-                  <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地缓存（Roxy：clear_local_cache，不添加 type=partial，不清除服务器缓存）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
-                  <button class="btn btn-outline-primary btn-sm btn-icon" title="输入任意信息并发送到插件数据面板" aria-label="传输数据" data-act="transferData" data-mid="${m.id}"><i class="bi bi-send" aria-hidden="true"></i><span class="visually-hidden">传输</span></button>
+                <div class="dropdown flex-shrink-0">
+                  <button class="btn btn-outline-secondary btn-sm btn-icon win-actions-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="窗口操作"><i class="bi bi-three-dots" aria-hidden="true"></i><span class="visually-hidden">窗口操作</span></button>
+                  <ul class="dropdown-menu shadow">
+                    <li><button class="dropdown-item" type="button" title="${_openTitle}" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right text-success"></i> 打开窗口</button></li>
+                    <li><button class="dropdown-item" type="button" title="${_startTitle}" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-key text-primary"></i> 打开 2FA</button></li>
+                    <li><button class="dropdown-item" type="button" title="关闭（后台倒计时）" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg text-secondary"></i> 关闭窗口</button></li>
+                    <li><hr class="dropdown-divider my-1"></li>
+                    <li><button class="dropdown-item" type="button" title="转移到其他任务类型" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right text-danger"></i> 转移类型</button></li>
+                    <li><button class="dropdown-item" type="button" title="清除指纹窗口本地缓存（不清服务器缓存）" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush text-warning"></i> 清除缓存</button></li>
+                    <li><button class="dropdown-item" type="button" title="输入任意信息并发送到插件数据面板" data-act="transferData" data-mid="${m.id}"><i class="bi bi-send text-primary"></i> 传输数据</button></li>
+                  </ul>
                 </div>
               </div>
             </td>
@@ -3348,7 +3359,7 @@
               ${canSwitchMappingProxy ? `
                 <select
                   class="form-select form-select-sm mono"
-                  style="font-size: 10px; min-width: 400px;"
+                  style="font-size: 10px; min-width: 180px;"
                   title="选择后立即同步到指纹浏览器窗口"
                   data-role="proxySelect"
                   data-space_pk="${escapeHtml(String(m.space_pk ?? ""))}"
@@ -3424,8 +3435,8 @@
             </td>
             ${_isVeo ? `
             <td>
-              <button type="button" class="btn btn-outline-primary btn-sm" title="一键删除旧 Flow 项目并创建新项目；不打开管理弹窗" data-act="veoProjectReset" data-mid="${m.id}">
-                重建（${Number(m.veo_flow_project_count ?? 0) || 0}）
+              <button type="button" class="btn btn-outline-primary btn-sm d-inline-flex align-items-center gap-1 veo-rebuild" title="一键删除旧 Flow 项目并创建新项目；不打开管理弹窗" data-act="veoProjectReset" data-mid="${m.id}">
+                <i class="bi bi-arrow-repeat" aria-hidden="true"></i>重建<span class="badge rounded-pill text-bg-secondary veo-count">${Number(m.veo_flow_project_count ?? 0) || 0}</span>
               </button>
             </td>
             ` : `
@@ -6222,5 +6233,26 @@
         .then(loadHandlerOptions)
         .then(loadTypes);
     </script>
-  </body>
+    <script>
+    // 表格列精简开关：默认精简(隐藏次要列);勾选「显示全部列」展开
+    (function(){
+      document.addEventListener('change', function(e){
+        var el=e.target; if(!el||!el.classList||!el.classList.contains('mcol-pick')) return;
+        var col=el.getAttribute('data-col');
+        document.querySelectorAll('.mapping-table').forEach(function(t){
+          if(col==='all') t.classList.toggle('show-all', el.checked);
+          else t.classList.toggle('sc-'+col, el.checked);
+        });
+      });
+    })();
+  </script>
+  <script>
+    // 表格内行内下拉菜单使用 fixed 定位,脱离 overflow:auto / sticky 裁切
+    if (window.bootstrap && bootstrap.Dropdown) {
+      bootstrap.Dropdown.Default.popperConfig = function (defaultConfig) {
+        return Object.assign({}, defaultConfig, { strategy: 'fixed' });
+      };
+    }
+  </script>
+</body>
 </html>

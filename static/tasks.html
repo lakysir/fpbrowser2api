@@ -29,17 +29,9 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
-          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
-          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
-          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
-          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
-          <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
-        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_club</span></span>
-        <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
       </div>
@@ -99,10 +91,27 @@
             </div>
           </div>
           <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
-            <div class="text-muted small">
-              共 <span class="fw-semibold" id="hintTotal">0</span> 条
-              <span class="text-muted">·</span>
-              当前第 <span class="fw-semibold" id="hintPage">1</span> 页
+            <div class="d-flex align-items-center gap-3">
+              <div class="text-muted small">
+                共 <span class="fw-semibold" id="hintTotal">0</span> 条
+                <span class="text-muted">·</span>
+                当前第 <span class="fw-semibold" id="hintPage">1</span> 页
+              </div>
+              <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">更多列</button>
+                <div class="dropdown-menu p-2 shadow" style="min-width: 230px;">
+                  <label class="d-flex align-items-center gap-2 small fw-semibold mb-1"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="all"> 显示全部列</label>
+                  <hr class="my-1">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:.2rem .8rem;">
+                    <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="4"> 媒体</label>
+                    <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="8"> 违规</label>
+                    <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="10"> prompt</label>
+                    <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="11"> result</label>
+                    <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="12"> 创建时间</label>
+                    <label class="d-flex align-items-center gap-2 small mb-0"><input type="checkbox" class="form-check-input mt-0 tcol-pick" data-col="13"> 更新时间</label>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="ms-auto d-flex gap-2">
               <button class="btn btn-outline-secondary btn-sm" id="btnPrev">上一页</button>
@@ -115,7 +124,7 @@
       <div class="card shadow-sm">
         <div class="card-body">
           <div class="table-responsive">
-            <table class="table table-sm align-middle" style="min-width: 1320px;">
+            <table class="table table-sm align-middle tasks-table">
               <thead>
                 <tr class="small2">
                   <th style="min-width: 160px;">窗口信息</th>
@@ -824,5 +833,17 @@
       loadQueueInfo();
       await load();
     </script>
-  </body>
+    <script>
+    (function(){
+      document.addEventListener('change', function(e){
+        var el=e.target; if(!el||!el.classList||!el.classList.contains('tcol-pick')) return;
+        var col=el.getAttribute('data-col');
+        document.querySelectorAll('.tasks-table').forEach(function(t){
+          if(col==='all') t.classList.toggle('show-all', el.checked);
+          else t.classList.toggle('sc-'+col, el.checked);
+        });
+      });
+    })();
+  </script>
+</body>
 </html>

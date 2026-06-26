@@ -305,31 +305,6 @@ async def admin_test_page():
     return _page(static_dir / "test.html")
 
 
-@app.get("/admin/network-capture", response_class=HTMLResponse)
-async def admin_network_capture_page():
-    return _page(static_dir / "network_capture.html")
-
-
-@app.get("/admin/agent", response_class=HTMLResponse)
-async def admin_agent_page():
-    return _page(static_dir / "agent.html")
-
-
-@app.get("/admin/paypal", response_class=HTMLResponse)
-async def admin_paypal_page():
-    return _page(static_dir / "paypal.html")
-
-
-@app.get("/admin/image-resources", response_class=HTMLResponse)
-async def admin_image_resources_page():
-    return _page(static_dir / "image_resources.html")
-
-
-@app.get("/admin/card-keys", response_class=HTMLResponse)
-async def admin_card_keys_page():
-    return _page(static_dir / "card_keys.html")
-
-
 @app.get("/admin/totp", response_class=HTMLResponse)
 async def admin_totp_page():
     return _page(static_dir / "totp.html")
