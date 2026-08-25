@@ -1,0 +1,240 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Browser2API</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
+    body { margin: 0; padding: 10px; font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; }
+    h1 { font-size: 16px; margin: 0 0 10px; }
+    .card { background:#111827; border:1px solid #334155; border-radius:10px; padding:10px; margin-bottom:10px; }
+    .row { display:flex; gap:8px; align-items:center; margin:7px 0; min-width:0; }
+    label { width:86px; color:#cbd5e1; font-size:12px; }
+    labelshort { width:40px; color:#cbd5e1; font-size:12px; }
+    input, select { flex:1; background:#020617; color:#e5e7eb; border:1px solid #475569; border-radius:6px; padding:6px; font-size:12px; }
+    input[type="checkbox"] { flex:0; width:16px; height:16px; }
+    button { background:#2563eb; color:#fff; border:0; border-radius:7px; padding:7px 10px; cursor:pointer; font-size:12px; white-space:nowrap; }
+    button.secondary { background:#475569; }
+    button.danger { background:#b91c1c; }
+    .status { display:flex; align-items:center; gap:8px; font-size:13px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:#64748b; }
+    .dot.ok { background:#22c55e; }
+    .dot.warn { background:#f59e0b; }
+    .dot.bad { background:#ef4444; }
+    .kv { font-size:12px; line-height:1.55; color:#cbd5e1; word-break:break-all; }
+    .logs { max-height:230px; overflow:auto; background:#020617; border-radius:8px; padding:8px; font-family:Consolas, monospace; font-size:11px; }
+    .log { border-bottom:1px solid #1e293b; padding:5px 0; white-space:pre-wrap; word-break:break-all; }
+    .log .ts { color:#94a3b8; }
+    .log.info .lvl { color:#60a5fa; }
+    .log.debug .lvl { color:#a78bfa; }
+    .log.warn .lvl { color:#fbbf24; }
+    .log.error .lvl { color:#f87171; }
+    .hint { color:#94a3b8; font-size:11px; margin-top:4px; }
+    .tabs { display:flex; gap:6px; margin:0 0 10px; min-width:0; }
+    .tab-btn { flex:1 1 0; min-width:0; background:#1e293b; color:#cbd5e1; border:1px solid #334155; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .tab-btn.active { background:#2563eb; color:#fff; border-color:#3b82f6; }
+    .tab-panel { display:none; }
+    .tab-panel.active { display:block; }
+    .transfer-meta { color:#94a3b8; font-size:11px; margin-bottom:8px; word-break:break-all; }
+    .transfer-list { max-height:470px; overflow:auto; display:flex; flex-direction:column; gap:7px; }
+    .transfer-line { display:flex; align-items:flex-start; gap:7px; background:#020617; border:1px solid #1e293b; border-radius:8px; padding:7px; min-width:0; }
+    .transfer-text { flex:1; font-size:12px; line-height:1.45; white-space:pre-wrap; word-break:break-word; }
+    .transfer-text a { color:#93c5fd; text-decoration:underline; }
+    .copy-line-btn { flex:0 0 auto; background:#334155; padding:4px 7px; }
+    .empty { color:#94a3b8; font-size:12px; padding:12px; text-align:center; border:1px dashed #334155; border-radius:8px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 10px; }
+    .topbar h1 { margin:0; }
+    .fpb-language-switch { margin-left:auto; flex:0 0 auto; width:82px; height:26px; padding:3px 6px; font-size:12px; background:#020617; color:#e5e7eb; border:1px solid #475569; border-radius:6px; }
+    #closePanelBtn { background:#475569; padding:5px 9px; }
+    .transfer-actions { display:flex; gap:6px; flex:0 0 auto; }
+    .debug-actions { flex-wrap:wrap; }
+    .external-links { display:flex; gap:10px; align-items:center; margin-left:auto; font-size:12px; }
+    .external-link { color:#93c5fd; text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
+    .external-link:hover { color:#bfdbfe; }
+    .veo-test-row { gap:6px; }
+    .veo-test-row label { width:58px; }
+    .veo-test-row button { flex:0 0 auto; padding:7px 8px; }
+    .short-select { flex:0 0 76px; width:76px; max-width:76px; }
+    .capture-status { font-size:11px; color:#94a3b8; margin-left:6px; }
+    .capture-status.running { color:#22c55e; }
+    .capture-status.paused { color:#f59e0b; }
+    .analysis-log { max-height:160px; overflow-y:auto; background:#020617; border-radius:8px; padding:6px 8px; font-family:Consolas,monospace; font-size:11px; margin-top:8px; }
+    .analysis-log-entry { border-bottom:1px solid #1e293b; padding:3px 0; white-space:pre-wrap; word-break:break-all; }
+    .analysis-log-entry .al-ts { color:#475569; }
+    .analysis-log-entry.ok .al-lvl { color:#22c55e; }
+    .analysis-log-entry.info .al-lvl { color:#60a5fa; }
+    .analysis-log-entry.error .al-lvl { color:#f87171; }
+    .capture-preview-card { min-height:260px; }
+    .capture-preview-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+    .capture-preview-head b { font-size:12px; }
+    .capture-preview-count { color:#22c55e; font-size:11px; white-space:nowrap; }
+    .capture-preview-title { display:flex; align-items:center; gap:8px; min-width:0; }
+    .capture-preview-actions { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
+    .capture-preview-actions button { padding:5px 8px; font-size:11px; }
+    .capture-preview-list { height:430px; max-height:52vh; overflow-y:auto; background:#020617; border:1px solid #1e293b; border-radius:8px; font-family:Consolas,monospace; font-size:11px; }
+    .capture-preview-item { padding:6px 8px; border-bottom:1px solid #1e293b; min-width:0; }
+    .capture-preview-item:last-child { border-bottom:none; }
+    .capture-preview-method { color:#38bdf8; font-weight:bold; font-size:10px; margin-right:8px; }
+    .capture-preview-status { color:#22c55e; font-size:10px; }
+    .capture-preview-status.err { color:#f87171; }
+    .capture-preview-url { color:#cbd5e1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+    .capture-preview-meta { color:#64748b; font-size:10px; margin-top:2px; }
+    .target-page-box { background:#020617; border:1px solid #1e293b; border-radius:8px; padding:8px; margin:8px 0; min-width:0; }
+    .target-page-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:5px; }
+    .target-page-head b { font-size:12px; }
+    .target-page-pill { color:#94a3b8; font-size:10px; white-space:nowrap; }
+    .target-page-title { color:#e5e7eb; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .target-page-url { color:#94a3b8; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:3px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>Browser2API-Agent</h1>
+    <button id="closePanelBtn" type="button">关闭</button>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn" id="tabDebugBtn" data-tab="debug" type="button">AutoTask</button>
+    <button class="tab-btn" id="tabTransferBtn" data-tab="transfer" type="button">Data Panel</button>
+    <button class="tab-btn" id="tabAnalysisBtn" data-tab="analysis" type="button">WebAiAgent</button>
+  </div>
+
+  <div id="debugPanel" class="tab-panel active">
+  <div class="card">
+    <div class="status">
+      <span id="dot" class="dot"></span>
+      <b id="connText">Loading...</b>
+    </div>
+    <div id="statusKv" class="kv"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <labelshort>token</labelshort>
+      <button id="clearPageStorageBtn" class="secondary" type="button">打码</button>
+      <input id="bridgeToken" placeholder="官网申请fpbrowser-use模型令牌" />
+    </div>
+    <div class="row">
+      <label>Bridge URL</label>
+      <input id="bridgeUrl" placeholder="ws://127.0.0.1:8000/api/extension/ws" />
+    </div>
+    <div class="row">
+      <label>Space ID</label>
+      <input id="spaceId" placeholder="space_id" />
+    </div>
+    <div class="row">
+      <label>Window Key</label>
+      <input id="windowKey" placeholder="window_key" />
+    </div>
+    <div class="row">
+      <label>Google账号</label>
+      <input id="googleAccount" placeholder="Google 账号 / Gmail" autocomplete="off" />
+    </div>
+    <div class="row">
+      <label>密码</label>
+      <input id="googlePassword" type="password" placeholder="Google 密码" autocomplete="off" />
+    </div>
+    <div class="row">
+      <label>EFA</label>
+      <input id="googleEfa" placeholder="2FA Secret（可空）" autocomplete="off" />
+    </div>
+
+    <div class="row">
+      <label>保活登录</label>
+      <input id="googleAutoLoginWatchEnabled" type="checkbox" />
+      <span class="hint">检测到 Google 登录页时自动登录</span>
+    </div>
+    <div class="row">
+      <label>图片/视频</label>
+      <input id="veoArchiveEnabled" type="checkbox" />
+      <span class="hint">自动清理</span>
+    </div>
+    <div class="row debug-actions">
+      <button id="saveBtn">保存并重连</button>
+      <button id="refreshBtn" class="secondary">刷新</button>
+      <button id="googleAutoLoginBtn" class="secondary" type="button">自动登录</button>
+      <span class="external-links" aria-label="外部链接">
+        <a class="external-link" href="https://www.newtoken.club" target="_blank" rel="noopener noreferrer">newtoken.club</a>
+        <a class="external-link" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">github</a>
+      </span>
+    </div>
+    <div class="row veo-test-row">
+      <label>VEO 测试</label>
+      <select id="veoTestKind" class="short-select" aria-label="VEO 测试类型">
+        <option value="image">图片</option>
+        <option value="video">视频</option>
+      </select>
+      <button id="veoGenerateTestBtn" type="button">生成测试</button>
+      
+    </div>
+    <div class="hint">保存后可访问后端 /api/extension/clients 查看注册状态。</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>任务 / 日志</b>
+      <button id="clearBtn" class="danger">清空日志</button>
+    </div>
+    <div id="logs" class="logs"></div>
+  </div>
+  </div>
+
+  <div id="transferPanel" class="tab-panel">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>Received Data</b>
+        <div class="transfer-actions">
+          <button id="copyAllTransferBtn" class="secondary" type="button">Copy All</button>
+          <button id="clearTransferBtn" class="danger" type="button">Clear</button>
+        </div>
+      </div>
+      <div id="transferMeta" class="transfer-meta"></div>
+      <div id="transferData" class="transfer-list"></div>
+      <div class="hint">Each line can be copied separately. Links are clickable and open in a new page. Data is cached in browser local storage.</div>
+    </div>
+  </div>
+
+  <div id="analysisPanel" class="tab-panel">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <b>Network 抓包</b>
+        <span id="captureStatusText" class="capture-status">未开始</span>
+      </div>
+      <div class="row">
+        <button id="captureToggleBtn" type="button">开始</button>
+        <button id="captureStopBtn" class="secondary" type="button">停止</button>
+      </div>
+      <div id="targetPageBox" class="target-page-box" title="">
+        <div class="target-page-head">
+          <b>Target Page</b>
+          <span id="targetPageSource" class="target-page-pill">Not bound</span>
+        </div>
+        <div id="targetPageTitle" class="target-page-title">No target page</div>
+        <div id="targetPageUrl" class="target-page-url"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="openAnalysisBtn" style="flex:1" type="button">查看日志 &amp; AI 分析</button>
+      </div>
+      <div id="analysisLog" class="analysis-log" style="display:none"></div>
+    </div>
+    <div class="card capture-preview-card">
+      <div class="capture-preview-head">
+        <div class="capture-preview-title">
+          <b>Network 请求列表</b>
+          <span id="capturePreviewCount" class="capture-preview-count">0 条</span>
+        </div>
+        <div class="capture-preview-actions">
+          <button id="captureRefreshBtn" class="secondary" type="button">刷新</button>
+          <button id="captureClearBtn" class="danger" type="button">清空</button>
+        </div>
+      </div>
+      <div id="capturePreviewList" class="capture-preview-list">
+        <div class="empty">暂无请求记录</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

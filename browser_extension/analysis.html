@@ -1,0 +1,383 @@
+<!doctype html>
+<html data-i18n-title="analysisTitle">
+<head>
+  <meta charset="utf-8" />
+  <title>Network 分析</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: Arial, sans-serif; background: #0f172a; color: #e5e7eb; font-size: 13px; }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: #111827; border-bottom: 1px solid #334155; flex-shrink: 0; }
+    #toolbar h1 { margin: 0; font-size: 15px; flex: 0 0 auto; min-width: 120px; }
+    #toolbar button { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #toolbar button.secondary { background: #475569; }
+    #toolbar button.danger { background: #b91c1c; }
+    #targetPageInfo { flex: 1 1 320px; min-width: 220px; display: flex; align-items: center; gap: 6px; overflow: hidden; color: #94a3b8; font-size: 11px; }
+    #targetPageInfo .target-label { flex: 0 0 auto; color: #64748b; }
+    #targetPageTitle { flex: 0 1 auto; min-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e5e7eb; }
+    #targetPageUrl { flex: 1 1 auto; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; }
+    .fpb-language-switch { flex: 0 0 auto; width: 82px; height: 26px; padding: 3px 6px; font-size: 11px; background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 5px; }
+    #captureControls { display: inline-flex; align-items: center; gap: 8px; }
+    .capture-status { font-size: 11px; color: #94a3b8; white-space: nowrap; }
+    .capture-status.running { color: #22c55e; }
+    .capture-status.paused { color: #f59e0b; }
+    #analysisConfigRow { display: flex; flex: 1 1 300px; min-width: 220px; align-items: center; gap: 6px; }
+    #analysisConfigRow input, #analysisConfigRow select { background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 5px; padding: 4px 7px; font-size: 11px; height: 26px; }
+    #analysisApiKey { width: 147px; }
+    .api-key-wrap { position: relative; display: flex; align-items: center; gap: 0; padding-top: 8px; }
+    .api-key-wrap input { border-radius: 5px 0 0 5px !important; }
+    #toggleApiKeyBtn { background: #1e293b; border: 1px solid #475569; border-left: none; border-radius: 0 5px 5px 0; height: 26px; padding: 0 6px; cursor: pointer; color: #94a3b8; font-size: 13px; line-height: 1; }
+    #toggleApiKeyBtn:hover { background: #334155; color: #e5e7eb; }
+    #applyKeyBtn { position: absolute; top: -4px; right: -8px; height: 16px; padding: 0 5px; border: 1px solid #f87171; border-radius: 999px; background: #dc2626; color: #fff; font-size: 10px; line-height: 14px; cursor: pointer; z-index: 3; white-space: nowrap; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35); }
+    #applyKeyBtn:hover { background: #ef4444; border-color: #fecaca; }
+    #analysisModelSelect { min-width: 80px; max-width: 120px; }
+    #analysisModelCustom { min-width: 150px; max-width: 220px; }
+    #saveAnalysisConfigBtn { background: #059669 !important; }
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* Left pane — network log list */
+    #logPane { width: 340px; min-width: 200px; display: flex; flex-direction: column; border-right: 1px solid #334155; flex-shrink: 0; }
+    #logFilter { padding: 6px 8px; background: #111827; border-bottom: 1px solid #334155; display: flex; gap: 6px; }
+    #logFilter input { flex: 1; background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 5px; padding: 4px 7px; font-size: 11px; }
+    #logFilter button { background: #475569; color: #fff; border: 0; border-radius: 5px; padding: 4px 8px; cursor: pointer; font-size: 11px; white-space: nowrap; }
+    #logFilter button.danger { background: #b91c1c; }
+    #logActions { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+    #logList { flex: 1; overflow-y: auto; }
+    .log-item { padding: 6px 10px; border-bottom: 1px solid #1e293b; cursor: pointer; display: flex; flex-direction: column; gap: 2px; position: relative; }
+    .log-item:hover { background: #1e293b; }
+    .log-item.selected { background: #1e3a5f; border-left: 3px solid #3b82f6; }
+    .log-item .li-method { font-size: 10px; font-weight: bold; color: #60a5fa; display: inline-block; width: 36px; }
+    .log-item .li-status { font-size: 10px; margin-left: 4px; }
+    .log-item .li-status.ok { color: #22c55e; }
+    .log-item .li-status.err { color: #f87171; }
+    .log-item .li-url { font-size: 11px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 36px; }
+    .log-item .li-meta { font-size: 10px; color: #64748b; }
+    .log-item .li-del { position: absolute; top: 6px; right: 6px; min-width: 28px; height: 16px; background: none; border: none; color: #475569; font-size: 10px; line-height: 16px; cursor: pointer; padding: 0 2px; display: none; }
+    .log-item:hover .li-del { display: block; }
+    .log-item .li-del:hover { color: #f87171; }
+    #logEmpty { padding: 20px; text-align: center; color: #475569; font-size: 12px; }
+
+    /* Right area — detail + chat */
+    #rightPane { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #detailArea { flex: 1; overflow: hidden; display: flex; flex-direction: column; border-bottom: 1px solid #334155; }
+    #detailTabs { display: flex; gap: 4px; padding: 6px 10px 0; background: #111827; border-bottom: 1px solid #334155; flex-shrink: 0; }
+    .detail-tab { background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-bottom: none; border-radius: 5px 5px 0 0; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+    .detail-tab.active { background: #0f172a; color: #e5e7eb; border-bottom: 1px solid #0f172a; }
+    #editLogBtn { margin-left: auto; align-self: center; background: #475569; color: #fff; border: 0; border-radius: 5px; padding: 4px 9px; cursor: pointer; font-size: 11px; display: none; }
+    #editLogBtn.active { display: inline-block; }
+    #editLogBtn:hover { background: #64748b; }
+    #detailContent { flex: 1; overflow: auto; padding: 10px; font-family: Consolas, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; color: #cbd5e1; }
+    #detailEmpty { padding: 20px; text-align: center; color: #475569; font-size: 12px; }
+
+    /* Drag handle between detail and chat */
+    #resizeHandle { height: 5px; background: #1e293b; cursor: row-resize; flex-shrink: 0; border-top: 1px solid #334155; border-bottom: 1px solid #334155; transition: background 0.15s; }
+    #resizeHandle:hover, #resizeHandle.dragging { background: #3b82f6; }
+
+    /* Chat pane */
+    #chatPane { height: 320px; min-height: 120px; display: flex; flex-direction: column; background: #0a0f1e; flex-shrink: 0; }
+    #chatHeader { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 10px; background: #111827; border-bottom: 1px solid #334155; flex-shrink: 0; }
+    #chatHeader .chat-title { font-size: 12px; font-weight: bold; flex: 0 0 auto; white-space: nowrap; }
+    #chatActions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+    #chatHeader button { background: #475569; color: #fff; border: 0; border-radius: 5px; padding: 3px 8px; cursor: pointer; font-size: 11px; }
+    #chatMessagesWrap { position: relative; flex: 1; min-height: 0; background: #0a0f1e; }
+    #chatMessages { height: 100%; overflow-y: auto; padding: 30px 10px 10px; display: flex; flex-direction: column; gap: 10px; }
+    .chat-msg { display: flex; flex-direction: column; gap: 3px; }
+    .chat-msg .msg-head { display: flex; align-items: center; gap: 6px; min-height: 16px; }
+    .chat-msg .msg-role { font-size: 10px; color: #64748b; text-transform: uppercase; }
+    .chat-msg .msg-actions { display: inline-flex; align-items: center; gap: 4px; opacity: 0.72; transition: opacity 0.12s; }
+    .chat-msg:hover .msg-actions { opacity: 1; }
+    .chat-msg .msg-action-btn { background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; padding: 1px 5px; font-size: 10px; line-height: 14px; cursor: pointer; }
+    .chat-msg .msg-action-btn:hover { background: #7f1d1d; color: #fee2e2; border-color: #991b1b; }
+    .chat-msg .msg-body { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .chat-msg.user .msg-body { color: #93c5fd; }
+    .chat-msg.assistant .msg-body { color: #e5e7eb; }
+    .chat-msg.tool .msg-body { color: #86efac; font-family: Consolas, monospace; font-size: 11px; background: #0d2414; padding: 6px 8px; border-radius: 5px; }
+    .chat-msg.system-note .msg-body { color: #f59e0b; font-size: 11px; }
+    .chat-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
+    .chat-image-thumb { width: 96px; min-height: 88px; border: 1px solid #334155; border-radius: 6px; background: #020617; overflow: hidden; display: flex; flex-direction: column; }
+    .chat-image-thumb img { width: 100%; height: 64px; object-fit: cover; display: block; background: #0f172a; }
+    .chat-image-thumb .image-meta { padding: 4px 5px; font-size: 10px; line-height: 1.25; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #imagePreviewBar { display: none; flex-wrap: wrap; gap: 8px; padding: 8px 8px 0; border-top: 1px solid #334155; background: #0a0f1e; flex-shrink: 0; }
+    #imagePreviewBar.active { display: flex; }
+    #networkReferenceBar { display: none; align-items: center; gap: 6px; padding: 7px 8px 0; border-top: 1px solid #334155; background: #0a0f1e; flex-shrink: 0; overflow-x: auto; }
+    #networkReferenceBar.active { display: flex; }
+    #networkReferenceBar .ref-label { flex: 0 0 auto; color: #94a3b8; font-size: 11px; white-space: nowrap; }
+    #networkReferenceList { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .network-ref-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 260px; height: 24px; padding: 0 6px; border: 1px solid #334155; border-radius: 6px; background: #111827; color: #cbd5e1; font-size: 11px; white-space: nowrap; }
+    .network-ref-chip .ref-text { overflow: hidden; text-overflow: ellipsis; }
+    .network-ref-chip .ref-remove { width: 16px; height: 16px; border: 0; border-radius: 999px; background: #1e293b; color: #94a3b8; cursor: pointer; line-height: 16px; padding: 0; font-size: 12px; }
+    .network-ref-chip .ref-remove:hover { background: #7f1d1d; color: #fee2e2; }
+    #clearNetworkRefsBtn { flex: 0 0 auto; height: 24px; border: 0; border-radius: 5px; background: #475569; color: #fff; cursor: pointer; font-size: 11px; padding: 0 7px; }
+    .pending-image { position: relative; width: 106px; border: 1px solid #334155; border-radius: 6px; background: #020617; overflow: hidden; }
+    .pending-image img { width: 100%; height: 70px; object-fit: cover; display: block; background: #0f172a; }
+    .pending-image .pending-name { padding: 4px 6px; color: #cbd5e1; font-size: 10px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pending-image .pending-remove { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border: 0; border-radius: 999px; background: rgba(15, 23, 42, 0.82); color: #fee2e2; cursor: pointer; padding: 0; line-height: 18px; font-size: 13px; }
+    #chatInputRow { position: relative; display: flex; gap: 6px; padding: 8px; border-top: 1px solid #334155; flex-shrink: 0; }
+    #attachImageBtn { background: #475569; color: #fff; border: 0; border-radius: 6px; width: 34px; min-width: 34px; height: 34px; padding: 0; cursor: pointer; font-size: 16px; align-self: flex-end; }
+    #attachImageBtn:disabled { background: #1e293b; color: #475569; cursor: default; }
+    #chatInput { flex: 1; min-width: 0; background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 6px; padding: 6px 64px 6px 8px; font-size: 12px; line-height: 1.45; font-family: Arial, sans-serif; resize: none; min-height: 58px; max-height: min(180px, 35vh); overflow-y: hidden; }
+    #chatSubmitCol { position: absolute; right: 14px; bottom: 15px; z-index: 4; display: block; }
+    #sendBtn { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+    #sendBtn:disabled { background: #1e3a5f; color: #475569; cursor: default; }
+    #clearChatBtn { position: absolute; top: 7px; right: 10px; z-index: 5; background: #334155; color: #cbd5e1; border: 0; border-radius: 5px; padding: 3px 8px; cursor: pointer; font-size: 11px; line-height: 18px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28); }
+    #clearChatBtn:hover { background: #475569; color: #fff; }
+    #analyzeAllBtn { background: #7c3aed; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #analyzeAllBtn:disabled { background: #3b1f7a; color: #475569; cursor: default; }
+    #analyzeTokenBtn { background: #0e7490; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #analyzeTokenBtn:disabled { background: #164e63; color: #475569; cursor: default; }
+    #cleanupLogsBtn { background: #be123c; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #cleanupLogsBtn:disabled { background: #4c1d2d; color: #475569; cursor: default; }
+    #generateTestCodeBtn { background: #c2410c; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #generateTestCodeBtn:disabled { background: #5f250c; color: #475569; cursor: default; }
+    #runGeneratedTestBtn { background: #0f766e; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #runGeneratedTestBtn:disabled { background: #134e4a; color: #475569; cursor: default; }
+    #taskGoalWrap { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+    #taskGoalWrap label { font-size: 12px; font-weight: bold; color: #e5e7eb; white-space: nowrap; }
+    #taskGoalSelect { background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 5px; padding: 4px 7px; font-size: 11px; height: 26px; min-width: 84px; max-width: 140px; }
+    #testConfigRow { display: none; position: relative; padding: 6px 10px; background: #0f172a; border-bottom: 1px solid #334155; flex-shrink: 0; }
+    #testConfigJson { width: 100%; min-height: 74px; max-height: 180px; resize: vertical; background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 5px; padding: 7px 112px 7px 9px; font-size: 11px; line-height: 1.45; font-family: Consolas, monospace; }
+    #testConfigActions { position: absolute; top: 12px; right: 16px; z-index: 4; display: flex; align-items: center; gap: 6px; }
+    #testConfigActions button { background: #475569; color: #fff; border: 0; border-radius: 5px; padding: 5px 9px; cursor: pointer; font-size: 11px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+    #testConfigActions button:hover { background: #64748b; }
+    #editTestConfigBtn { width: 26px; height: 26px; padding: 0 !important; font-size: 15px !important; line-height: 26px; font-weight: bold; }
+    #scriptParamsPanel { display: none; margin: 0 12px 8px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; flex-shrink: 0; overflow: hidden; }
+    #promptModal[data-kind="generatedCode"] #scriptParamsPanel { display: block; }
+    #scriptParamsHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 9px; border-bottom: 1px solid #334155; background: #111827; color: #cbd5e1; font-size: 11px; font-weight: bold; }
+    #scriptParamsBody { position: relative; padding: 7px; }
+    #scriptParamsInput { width: 100%; min-height: 84px; max-height: 180px; resize: vertical; background: #020617; color: #e5e7eb; border: 1px solid #475569; border-radius: 5px; padding: 7px 38px 7px 9px; font-size: 11px; line-height: 1.45; font-family: Consolas, monospace; }
+    #scriptParamsPanel.expanded #scriptParamsInput { min-height: 240px; max-height: min(42vh, 420px); }
+    .field-expand-btn { position: absolute; top: 5px; right: 5px; width: 24px; height: 24px; padding: 0 !important; border: 0; border-radius: 5px; background: #475569; color: #fff; cursor: pointer; font-size: 14px; line-height: 24px; font-weight: bold; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+    .field-expand-btn:hover { background: #64748b; }
+    .prompt-action { position: relative; display: inline-flex; }
+    .prompt-edit-btn { position: absolute; top: -7px; right: -7px; width: 17px; height: 17px; padding: 0 !important; border-radius: 999px !important; background: #f59e0b !important; color: #111827 !important; font-size: 11px !important; line-height: 17px; font-weight: bold; z-index: 2; }
+    .prompt-edit-btn:hover { background: #fbbf24 !important; }
+    #promptModal { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; background: rgba(2, 6, 23, 0.72); }
+    #promptModal.active { display: flex; }
+    #promptDialog { width: min(820px, calc(100vw - 32px)); height: min(620px, calc(100vh - 48px)); display: flex; flex-direction: column; background: #111827; border: 1px solid #475569; border-radius: 8px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45); }
+    #promptModal[data-kind="generatedCode"] #promptDialog { width: min(1100px, calc(100vw - 32px)); height: min(820px, calc(100vh - 32px)); }
+    #promptModal[data-kind="generatedCode"] #promptEditorArea { margin-top: 8px; }
+    #promptModal[data-kind="generatedCode"] #promptTextarea { min-height: 420px; font-size: 12.5px; line-height: 1.55; tab-size: 2; }
+    #promptDialogHeader { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid #334155; }
+    #promptDialogTitle { margin: 0; font-size: 13px; }
+    #promptCloseBtn { background: #475569; color: #fff; border: 0; border-radius: 5px; padding: 4px 8px; cursor: pointer; }
+    #promptFindBar { display: none; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #334155; background: #111827; }
+    #promptModal[data-kind="generatedCode"] #promptFindBar.active { display: flex; }
+    #promptFindInput { flex: 1; min-width: 120px; height: 28px; border: 1px solid #475569; border-radius: 5px; background: #020617; color: #e5e7eb; padding: 4px 8px; font-size: 12px; }
+    #promptFindCount { min-width: 54px; color: #94a3b8; font-size: 11px; text-align: center; }
+    #promptFindBar button { height: 28px; border: 0; border-radius: 5px; background: #475569; color: #fff; padding: 0 9px; cursor: pointer; font-size: 12px; }
+    #promptFindBar button:hover { background: #64748b; }
+    #promptEditorArea { display: flex; flex: 1; min-height: 0; flex-direction: column; margin: 10px 12px 8px; border: 1px solid #334155; border-radius: 6px; background: #0b1220; overflow: hidden; }
+    #promptCodeEditor { flex: 1; min-height: 0; display: flex; background: #020617; border-bottom: 1px solid #334155; overflow: hidden; }
+    #promptLineNumbers { display: none; flex: 0 0 54px; padding: 10px 8px 10px 0; overflow: hidden; background: #08111f; border-right: 1px solid #1e293b; color: #64748b; font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.55; text-align: right; user-select: none; white-space: pre; }
+    #promptModal[data-kind="generatedCode"] #promptLineNumbers { display: block; }
+    #promptTextarea { flex: 1; width: 100%; min-width: 0; min-height: 240px; resize: none; background: #020617; color: #e5e7eb; border: 0; border-radius: 0; padding: 10px; font-family: Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
+    #promptModal[data-kind="generatedCode"] #promptTextarea { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+    #promptEditorActions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; background: #111827; }
+    #promptSaveStatus { min-width: 0; color: #22c55e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #promptEditorActionButtons { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
+    #promptEditorActionButtons button { color: #fff; border: 0; border-radius: 5px; padding: 5px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    #scriptManagerPanel { display: none; margin: 0 12px 8px; border: 1px solid #334155; border-radius: 6px; background: #0f172a; flex-shrink: 0; overflow: hidden; }
+    #promptModal[data-kind="generatedCode"] #scriptManagerPanel.active { margin-top: 8px; }
+    #scriptManagerPanel.active { display: block; }
+    #scriptManagerTabs { display: flex; align-items: center; gap: 4px; padding: 6px 10px 0; background: #111827; border-bottom: 1px solid #334155; }
+    .script-manager-tab { background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-bottom: none; border-radius: 5px 5px 0 0; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+    .script-manager-tab.active { background: #0f172a; color: #e5e7eb; border-bottom: 1px solid #0f172a; margin-bottom: -1px; }
+    .script-manager-pane { display: none; padding: 7px 10px; }
+    .script-manager-pane.active { display: block; }
+    .script-manager-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) 28px auto; align-items: center; gap: 6px; margin-bottom: 6px; min-width: 0; }
+    .script-manager-fields { display: grid; grid-template-columns: minmax(140px, 0.56fr) minmax(220px, 1.44fr); align-items: start; gap: 6px; margin-bottom: 0; }
+    .script-manager-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+    .script-square-entry { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+    .script-square-entry button { height: 28px; border: 0; border-radius: 5px; background: #334155; color: #e5e7eb; padding: 0 10px; cursor: pointer; font-size: 11px; }
+    .script-square-entry button:hover { background: #475569; color: #fff; }
+    .script-manager-import { display: grid; grid-template-columns: minmax(160px, 1fr) auto; gap: 6px; align-items: center; }
+    .script-manager-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+    .script-manager-row input, .script-manager-row select, .script-manager-fields input, .script-manager-import input { min-width: 0; width: 100%; border: 1px solid #475569; border-radius: 5px; background: #020617; color: #e5e7eb; padding: 4px 7px; font-size: 11px; height: 28px; }
+    .script-manager-row button, .script-manager-actions button, .script-manager-import button, .script-manager-toolbar button { flex: 0 0 auto; height: 28px; border: 0; border-radius: 5px; background: #475569; color: #fff; padding: 0 9px; cursor: pointer; font-size: 11px; }
+    #refreshMyScriptsBtn { width: 28px; padding: 0 !important; font-size: 15px !important; line-height: 28px; font-weight: bold; }
+    .script-manager-row button.primary, .script-manager-import button.primary { background: #2563eb; }
+    .script-manager-row button.success, .script-manager-actions button.success { background: #059669; }
+    #scriptManagerStatus { padding: 0 10px 6px; min-height: 14px; color: #94a3b8; font-size: 11px; line-height: 14px; }
+    #promptDialogFooter { display: none; }
+    #promptResetBtn { background: #475569; }
+    #promptSaveBtn { background: #059669; }
+    #promptSaveBtn.is-disabled, #promptSaveBtn:disabled { background: #334155; color: #94a3b8; cursor: not-allowed; }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <h1>Network 分析 &amp; AI 智能体</h1>
+    <div id="targetPageInfo" title="">
+      <span class="target-label">目标页</span>
+      <span id="targetPageTitle">未绑定</span>
+      <span id="targetPageUrl"></span>
+    </div>
+    <div id="captureControls">
+      <span id="captureStatusText" class="capture-status">未开始</span>
+      <button id="captureToggleBtn" type="button">开始</button>
+      <button id="captureStopBtn" class="secondary" type="button">停止</button>
+    </div>
+  </div>
+  <div id="main">
+    <div id="logPane">
+      <div id="logFilter">
+        <input id="filterInput" placeholder="过滤 URL / 方法..." />
+        <div id="logActions">
+          <button id="refreshLogBtn" class="secondary" type="button">刷新</button>
+          <button id="tbClearBtn" class="danger" type="button">清空</button>
+        </div>
+      </div>
+      <div id="logList"><div id="logEmpty">暂无请求记录</div></div>
+    </div>
+    <div id="rightPane">
+      <div id="detailArea">
+        <div id="detailTabs">
+          <button class="detail-tab active" data-tab="summary">概要</button>
+          <button class="detail-tab" data-tab="request">Request</button>
+          <button class="detail-tab" data-tab="response">Response</button>
+          <button class="detail-tab" data-tab="stack">调用栈</button>
+          <button id="editLogBtn" type="button">Edit</button>
+        </div>
+        <div id="detailContent"><div id="detailEmpty">← 选择左侧请求查看详情</div></div>
+      </div>
+      <div id="resizeHandle"></div>
+      <div id="chatPane">
+        <div id="chatHeader">
+          <span class="chat-title">AI 智能体</span>
+          <div id="analysisConfigRow">
+            <div class="api-key-wrap">
+              <input id="analysisApiKey" type="password" placeholder="API Key（可留空用 Bridge Token）" />
+              <button id="toggleApiKeyBtn" type="button" title="显示/隐藏 API Key">👁</button>
+              <button id="applyKeyBtn" type="button" title="打开 NewToken 申请 API Key">申请key</button>
+            </div>
+            <select id="analysisModelSelect"><option value="">-- 点击加载模型 --</option></select>
+            <input id="analysisModelCustom" type="text" placeholder="自定义模型 ID" style="display:none" />
+            <button id="saveAnalysisConfigBtn">保存</button>
+          </div>
+          <div id="chatActions">
+            <div id="taskGoalWrap">
+              <label for="taskGoalSelect">任务目标</label>
+              <select id="taskGoalSelect"></select>
+            </div>
+            <span class="prompt-action">
+              <button id="cleanupLogsBtn">清理无关请求</button>
+              <button class="prompt-edit-btn" id="editCleanupPromptBtn" type="button" title="修改 Prompt">✎</button>
+            </span>
+            <span class="prompt-action">
+              <button id="analyzeAllBtn">分析所有请求</button>
+              <button class="prompt-edit-btn" id="editAllPromptBtn" type="button" title="修改 Prompt">✎</button>
+            </span>
+            <span class="prompt-action">
+              <button id="analyzeTokenBtn" disabled>分析 Token 来源</button>
+              <button class="prompt-edit-btn" id="editTokenPromptBtn" type="button" title="修改 Prompt">✎</button>
+            </span>
+            <span class="prompt-action">
+              <button id="generateTestCodeBtn">生成测试代码</button>
+              <button class="prompt-edit-btn" id="editTestCodePromptBtn" type="button" title="修改 Prompt">✎</button>
+            </span>
+            <span class="prompt-action">
+              <button id="runGeneratedTestBtn">测试</button>
+              <button class="prompt-edit-btn" id="editGeneratedCodeBtn" type="button" title="修改测试代码">✎</button>
+            </span>
+          </div>
+        </div>
+        <div id="testConfigRow">
+          <textarea id="testConfigJson" spellcheck="false"></textarea>
+          <div id="testConfigActions">
+            <button id="editTestConfigBtn" type="button" title="Edit Params" aria-label="Edit Params">&#8599;</button>
+            <button id="resetTestConfigBtn" type="button" data-i18n="resetTestConfig">Reset Params</button>
+          </div>
+        </div>
+        <div id="chatMessagesWrap">
+          <button id="clearChatBtn" type="button">Clear Chat</button>
+          <div id="chatMessages"></div>
+        </div>
+        <div id="imagePreviewBar"></div>
+        <div id="networkReferenceBar">
+          <span class="ref-label">引用 Network</span>
+          <div id="networkReferenceList"></div>
+          <button id="clearNetworkRefsBtn" type="button">清空</button>
+        </div>
+        <div id="chatInputRow">
+          <input id="imageUploadInput" type="file" accept="image/*" multiple style="display:none" />
+          <button id="attachImageBtn" type="button" title="Upload image">+</button>
+          <textarea id="chatInput" placeholder="输入分析指令，如：分析 token 生成逻辑…&#10;Shift+Enter 换行，Enter 发送"></textarea>
+          <div id="chatSubmitCol">
+            <button id="sendBtn">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="promptModal">
+  <div id="promptDialog">
+    <div id="promptDialogHeader">
+      <h2 id="promptDialogTitle">Prompt</h2>
+      <button id="promptCloseBtn" type="button">关闭</button>
+    </div>
+    <div id="promptFindBar">
+      <input id="promptFindInput" type="search" placeholder="Find in code" />
+      <span id="promptFindCount">0/0</span>
+      <button id="promptFindPrevBtn" type="button">Prev</button>
+      <button id="promptFindNextBtn" type="button">Next</button>
+      <button id="promptFindCloseBtn" type="button">Close</button>
+    </div>
+    <div id="scriptParamsPanel">
+      <div id="scriptParamsHeader">
+        <span>Script Params</span>
+      </div>
+      <div id="scriptParamsBody">
+        <textarea id="scriptParamsInput" spellcheck="false"></textarea>
+        <button id="editScriptParamsBtn" class="field-expand-btn" type="button" title="Edit Params" aria-label="Edit Params">&#8599;</button>
+      </div>
+    </div>
+    <div id="promptEditorArea">
+      <div id="promptCodeEditor">
+        <div id="promptLineNumbers"></div>
+        <textarea id="promptTextarea" wrap="off"></textarea>
+      </div>
+      <div id="promptEditorActions">
+        <span id="promptSaveStatus"></span>
+        <div id="promptEditorActionButtons">
+          <button id="promptResetBtn" type="button" data-i18n="resetDefault">Reset Default</button>
+          <button id="promptSaveBtn" type="button" data-i18n="save">Save</button>
+        </div>
+      </div>
+    </div>
+    <div id="scriptManagerPanel">
+      <div class="script-manager-grid">
+        <div class="script-manager-section">
+          <h3>我的脚本草稿</h3>
+          <div class="script-manager-toolbar">
+            <select id="myScriptSelect"><option value="">选择我的脚本</option></select>
+            <button id="refreshMyScriptsBtn" type="button" title="刷新" aria-label="刷新">&#8635;</button>
+            <button id="newScriptDraftBtn" type="button">新建草稿</button>
+          </div>
+          <div class="script-manager-fields">
+            <input id="scriptTitleInput" type="text" placeholder="Title" />
+            <input id="scriptDescriptionInput" type="text" placeholder="Description" />
+          </div>
+        </div>
+        <div class="script-manager-section">
+          <h3>脚本广场</h3>
+          <div class="script-manager-row">
+            <input id="squareScriptIdInput" type="number" min="1" placeholder="脚本 ID" />
+            <button id="loadSquareScriptBtn" class="primary" type="button">读取到测试框</button>
+          </div>
+        </div>
+      </div>
+      <div id="scriptManagerStatus"></div>
+    </div>
+    <div id="promptDialogFooter"></div>
+  </div>
+</div>
+<script src="i18n.js"></script>
+<script src="analysis.js"></script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "version": "2.1.7",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "tabs",
+    "cookies",
+    "storage",
+    "scripting",
+    "alarms",
+    "webRequest",
+    "debugger",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "ws://*/*",
+    "https://*/*",
+    "https://labs.google/*",
+    "https://*.google.com/*",
+    "https://*.googleapis.com/*",
+    "https://dreamina.capcut.com/*",
+    "https://*.capcut.com/*",
+    "https://*.capcutapi.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "FPBrowser2API",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "https://labs.google/*",
+        "https://dreamina.capcut.com/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "content/fpb_config_content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "popup.html?panel=1"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9fMjZsKRKvTcSepZ6iCSOZ9HB+2NUH+jlcoRG3M9VSPjjlJpuKWXoDbza9OAL2FqkmM3PronndBEBetpfbavM/6n0gLnplT701Vm8LYlALtsjo9pNNEevIWAu+LgrOPABYqSZ+PvZkTo+LYumNx7galGEioVpuY48VV7cjZbzSUxGiJgJk9Ytuq4WoF3aNbCviIBIJDj/mw/P6zD7sTi31MrPdtqVSiwTjNE5ZdoNiLS/JSXPcYq6JwzWW+/ufir5Fv/WHf+Pqb7sk7/87Uf2d23sFzeWyprTfgSdulFHPet2YCL/sXBHPCwkVxnKb++sECBdmyTVt/el+0JTlo1ewIDAQAB"
+}
