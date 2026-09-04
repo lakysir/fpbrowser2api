@@ -571,7 +571,7 @@ async function runTask(msg) {
         googleAccount: payload.google_account || payload.googleAccount || "",
         googlePassword: payload.google_password || payload.googlePassword || "",
         googleEfa: payload.google_efa || payload.googleEfa || ""
-      }, loginTab?.id ? { tabId: loginTab.id, url: loginUrl } : {});
+      }, loginTab?.id ? { tabId: loginTab.id, url: loginUrl, onlyIfGoogleLoginPage: true } : { onlyIfGoogleLoginPage: true });
       const targetUrl = normalizeRedirectUrl(payload.target_url || payload.after_login_url || "");
       if (targetUrl) {
         const tabId = loginTab?.id;
@@ -743,12 +743,35 @@ function isGoogleAutoLoginWatchUrl(raw) {
   }
 }
 
+function isGoogleFlowProjectUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:"
+      && u.hostname.toLowerCase() === "labs.google"
+      && /^\/fx\/tools\/flow\/project(?:\/|$)/i.test(u.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isGoogleOAuthStartUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:"
+      && u.hostname.toLowerCase() === "labs.google"
+      && /^\/fx\/api\/auth\/signin(?:\/|$)/i.test(u.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
 // AI Studio 页面会显示当前登录账号的邮箱，Google 自动登录不得在这里执行
 // DOM 检测、点击或导航。它仍保留在 Google URL 监控范围内，由各登录入口静默跳过。
 function isGoogleAutoLoginProtectedUrl(raw) {
   try {
     const u = new URL(String(raw || ""));
-    return u.protocol === "https:" && u.hostname.toLowerCase() === "aistudio.google.com";
+    return (u.protocol === "https:" && u.hostname.toLowerCase() === "aistudio.google.com")
+      || isGoogleFlowProjectUrl(raw);
   } catch (_) {
     return false;
   }
@@ -882,10 +905,13 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
   // DOM 文案双重确认过），必须放行，否则监听路径在此直接 skip，走不到下面点击
   // "Sign in with Google" 并跳转 accounts.google.com 的逻辑。真正的非登录页仍由
   // 下方的 DOM 检测兜底拦下。
-  if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl) && !isGoogleAutoLoginWatchUrl(curUrl)) {
+  if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl) && !isGoogleOAuthStartUrl(curUrl)) {
     return { skipped: true, reason: "not_google_login_page", url: curUrl };
   }
   if (!isGoogleAccountsUrl(curUrl)) {
+    if (!isGoogleOAuthStartUrl(curUrl)) {
+      return { skipped: true, reason: "not_google_login_entry", url: curUrl };
+    }
     // 第三方 OAuth 起始页（如 labs.google/fx/api/auth/signin）：先点它自己的
     // "Sign in with Google" 按钮走正常 OAuth 流程；点不到再退回直接导航。
     let clickedProvider = false;
@@ -1597,7 +1623,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await chargeNewapiUsage("popup_google_auto_login", { source: "popup.googleAutoLogin" });
       const result = await runGoogleAutoLogin(
         message.creds || {},
-        tab?.id ? { charged: true, tabId: tab.id, url } : { charged: true }
+        tab?.id ? { charged: true, tabId: tab.id, url, onlyIfGoogleLoginPage: true } : { charged: true, onlyIfGoogleLoginPage: true }
       );
       sendResponse({ ok: true, result });
       return;
