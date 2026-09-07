@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import os
 import signal
 from contextlib import asynccontextmanager
@@ -258,6 +259,8 @@ app.include_router(browser_extension_bridge.router)
 
 
 # 静态资源（js/css/img）
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("image/avif", ".avif")
 static_dir = STATIC_DIR
 assets_dir = static_dir / "assets"
 assets_dir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +303,11 @@ async def admin_tasks_page():
     return _page(static_dir / "tasks.html")
 
 
+@app.get("/admin/watermark-tasks", response_class=HTMLResponse)
+async def admin_watermark_tasks_page():
+    return _page(static_dir / "watermark_tasks.html")
+
+
 @app.get("/admin/test", response_class=HTMLResponse)
 async def admin_test_page():
     return _page(static_dir / "test.html")
@@ -339,4 +347,3 @@ async def admin_logs_page():
 @app.get("/admin/users", response_class=HTMLResponse)
 async def admin_users_page():
     return _page(static_dir / "users.html")
-

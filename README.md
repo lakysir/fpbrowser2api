@@ -1,33 +1,31 @@
 # FPBrowser2API
 
-一款浏览器插件AI Agent。通过AI智能体分析目标网站的token和公开接口，把各个网站的功能转换成api来调用，目前对Sora、Google Flow/Veo、Seedance、Grok、ChatGPT 图片等站点进行了封装。
+基于 RoxyBrowser 指纹浏览器的 AI 视频/图片自动化任务框架。项目通过指纹浏览器保活账号、隔离环境，并在真实页面上下文中执行插件自动化逻辑，把 Sora、Google Flow/Veo、Seedance、Grok、ChatGPT 图片等站点能力封装成可管理、可调度、可对外调用的 API。
 
-- QQ 交流群：1035463132
-- 操作视频：<[https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2](https://www.bilibili.com/video/BV1AjEH62EBV/)>
-- <img width="1920" height="1033" alt="image" src="https://github.com/user-attachments/assets/af0b0ebc-afc0-4de6-8baa-949e541a8974" />
+> QQ 交流群：1035463132
+> 操作视频：<https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2>
 
 ## 重要声明
 
 - 本项目只供技术研究、学习验证、私有测试环境使用。
-- 本项目智能体只调用网站公开的接口，不会入侵任何网站内部接口。
 - 请勿用于商业化运营、批量滥用、违反目标站点条款或任何违法违规用途。
 - 使用者应自行承担账号、额度、风控、合规和数据安全风险。
 - 本项目不保证任何第三方站点长期稳定可用，也不承诺规避风控的成功率。
 
 ## 当前能力
 
-- 浏览器账号保活：每个窗口有独立 Cookie、LocalStorage、UA、代理和浏览器指纹。
-- 用户请使用自己的账号登录目标网站，请确保自己拥有账号的权限。
+- 指纹浏览器账号保活：每个窗口有独立 Cookie、LocalStorage、UA、代理和浏览器指纹。
 - 后台管理：项目、浏览器服务器、空间、窗口、任务类型、任务队列、日志和用户管理。
 - 任务调度：按任务类型绑定窗口，支持窗口池、额度判断、并发控制和任务进度回写。
-- 插件执行：通过 CDP 连接真实浏览器窗口，在页面上下文中执行 fetch、上传、轮询和结果提取。
+- 插件执行：通过 Playwright/CDP 连接真实浏览器窗口，在页面上下文中执行 fetch、上传、轮询和结果提取。
 - NewAPI/OpenAI 风格接口：提供 `/v1/models`、`/v1/videos`、`/v1/videos/{task_id}`，方便中转站或上层系统接入。
 
 主要适配方向：
 
 | 方向 | 处理器/入口 | 说明 |
 |---|---|---|
-| Google Flow / Veo | `veo_workflow` | Veo 3.1、Veo Omni Flash、Nana Banana 2/Pro 图片1k/2k/4k生成 |
+| Google Flow / Veo | `veo_workflow` | Veo 3.1、Veo Omni Flash、Nana Banana 2/Pro 图片生成 |
+| Seedance 2.0 / 即梦国际站 | `dreamina_workflow` | 文生视频、首尾帧、多参考图视频 |
 | ChatGPT 图片 | `gpt_workflow` | `gpt-image2-1k` / `2k` / `4k` 图片生成 |
 | Sora | `sora_gen_video` | Sora 视频、草稿发布、角色创建、额度等辅助能力 |
 | Grok | `grok_workflow` | Grok 工作流自动化 - 正在进行中....
@@ -38,12 +36,11 @@
 
 | 维度 | 纯协议逆向 | FPBrowser2API |
 |---|---|---|
-| 登录态 | 通常依赖 token、cookie 或私有鉴权参数 | 复用浏览器中的真实登录态 |
+| 登录态 | 通常依赖 token、cookie 或私有鉴权参数 | 复用指纹浏览器中的真实登录态 |
 | 环境隔离 | 多账号容易共享运行环境和请求特征 | 每个窗口可独立代理、指纹和存储 |
 | 维护成本 | 目标站点接口、加密、字段变化后经常需要重写 | 网页可正常使用时，插件和页面上下文逻辑更容易维护 |
 | 模型扩展 | 新模型往往需要重新分析协议 | 可按站点工作流扩展新的执行器或插件 provider |
 | 调度管理 | 常见脚本需要自行实现队列、窗口和额度 | 后台统一管理任务类型、窗口池、并发和日志 |
-| 风险 | 逆向接口，违规违法 | 使用js调用目标网站的公开接口 |
 
 ## 为什么使用指纹浏览器
 
@@ -52,7 +49,10 @@
 1. 每个任务可以绑定一个独立浏览器窗口，隔离 Cookie、LocalStorage、UA、代理和指纹。
 2. 用户先在指纹浏览器中手动登录目标站点、完成验证或订阅准备。
 3. 后端通过 RoxyBrowser 暴露的 CDP 地址连接到该窗口。
-4. 浏览器插件在页面上下文中调用js公开接口进行上传文件、任务黄建、轮询状态、读取结果。
+4. 执行器在页面上下文中调用接口、上传文件、轮询状态、读取结果。
+5. 遇到 Cloudflare/Turnstile 等挑战页时，执行器会尝试等待放行、点击验证控件，必要时重启窗口自愈。
+
+推荐使用 RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>
 
 <img width="1919" height="914" alt="RoxyBrowser screenshot" src="https://github.com/user-attachments/assets/34238cc6-66c0-41eb-97b0-405014ea467c" />
 
@@ -132,7 +132,7 @@ powershell -ExecutionPolicy Bypass -File .\fpbrowser2api_service.ps1 stop
 
 ### 1. RoxyBrowser 侧准备
 
-1. 在线注册：<https://roxybrowser.com?code=0416Z62A>。
+1. 下载并登录 RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>。
 2. 创建空间 Workspace、项目和浏览器窗口。
 3. 为窗口配置代理、账号信息和目标站点登录态。
 4. 启用 RoxyBrowser 本地 API 或局域网 API。
@@ -422,6 +422,75 @@ curl http://127.0.0.1:8002/v1/videos/8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234 \
 
 ## curl 示例
 
+### Seedance 2 文生视频
+
+```bash
+curl -X POST http://127.0.0.1:8002/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2",
+    "prompt": "a fashion film of a model walking through neon Tokyo at night",
+    "duration": 10,
+    "aspect_ratio": "16:9",
+    "resolution": "720p"
+  }'
+```
+
+### Seedance 2 快速模型
+
+```bash
+curl -X POST http://127.0.0.1:8002/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2-fast",
+    "prompt": "a golden retriever puppy running through sunflowers, cinematic slow motion",
+    "duration": 10,
+    "aspect_ratio": "16:9",
+    "resolution": "720p"
+  }'
+```
+
+### Seedance 2 首尾帧
+
+```bash
+curl -X POST http://127.0.0.1:8002/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2",
+    "prompt": "animate naturally from the first frame to the final frame",
+    "duration": 10,
+    "aspect_ratio": "9:16",
+    "function_mode": "first_last_frames",
+    "images": [
+      "https://your-cdn.com/first.jpg",
+      "https://your-cdn.com/last.jpg"
+    ]
+  }'
+```
+
+### Seedance 2 多参考图
+
+```bash
+curl -X POST http://127.0.0.1:8002/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance-2",
+    "prompt": "use the character, outfit and product references to make a fashion commercial",
+    "duration": 15,
+    "aspect_ratio": "16:9",
+    "function_mode": "omni_reference",
+    "images": [
+      "https://your-cdn.com/character.jpg",
+      "https://your-cdn.com/outfit.jpg",
+      "https://your-cdn.com/product.jpg"
+    ]
+  }'
+```
+
 ### Veo 3.1 文生视频
 
 ```bash
@@ -675,8 +744,9 @@ nana-banana-pro-4k
 - Flow：支持 Nana Banana 2 1K/2K/4K、Nana Banana Pro 1K/2K/4K 图片生成。
 - Flow：支持 `veo-3-1`、`veo-omni-flash` 视频生成。
 - ChatGPT：支持 `gpt-image2-1k`、`gpt-image2-2k`、`gpt-image2-4k` 图片生成。
+- Jimeng/Seedance：支持 Seedance 2.0 视频生成。
 
 ### 2026-05-11
 
 - Google Flow 纯净模式：生成的视频和图片会归档，保持页面干净，减少资源消耗。
-- Seedance 2.0 接口封装，已适配美国、土耳其、加拿大等区域。
+- Seedance 2.0 国际站上线，已适配美国、土耳其、加拿大等区域。

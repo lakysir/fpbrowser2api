@@ -36,7 +36,7 @@
         </div>
         <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
         <a class="btn btn-warning btn-sm me-3" href="https://roxybrowser.com/?code=0416Z62A" target="_blank" rel="noopener noreferrer">Roxy浏览器下载</a>
-        <a class="btn btn-danger btn-sm me-3" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
+        <a class="btn btn-danger btn-sm me-3" href="https://www.webshare.io/?referral_code=jy4yn1bfchnz" target="_blank" rel="noopener noreferrer">购买代理IP</a>
         <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
@@ -116,19 +116,20 @@
             <table class="table table-sm align-middle" style="min-width: 1320px;">
               <thead>
                 <tr class="small2">
-                  <th style="min-width: 160px;">窗口信息</th>
-                  <th style="min-width: 150px;">IP</th>
-                  <th style="min-width: 120px;">任务类型</th>
+                  <th style="min-width: 140px;">窗口信息</th>
+                  <th style="min-width: 130px;">IP</th>
+                  <th style="min-width: 110px;">任务类型</th>
                   <th style="min-width: 72px;">媒体</th>
+                  <th style="min-width: 110px;">模型名称</th>
                   <th style="min-width: 80px;">task_id</th>
                   <th style="min-width: 100px;">状态</th>
                   <th style="min-width: 100px;">进度</th>
                   <th style="min-width: 60px;">违规</th>
-                  <th style="min-width: 200px;">错误信息</th>
+                  <th style="min-width: 150px;">错误信息</th>
                   <th style="min-width: 80px;">prompt</th>
                   <th style="min-width: 80px;">result</th>
-                  <th style="min-width: 145px;">创建时间</th>
-                  <th style="min-width: 145px;">更新时间</th>
+                  <th style="min-width: 135px;">创建时间</th>
+                  <th style="min-width: 135px;">更新时间</th>
                 </tr>
               </thead>
               <tbody id="body"></tbody>
@@ -284,9 +285,34 @@
       }
 
       function getPromptText(item) {
+        const pj = item?.prompt_json;
+        if (typeof pj === "string" && pj.trim()) return pj;
         const p = item?.prompt;
         if (typeof p === "string" && p.trim()) return p;
         return "";
+      }
+
+      function parsePromptPayload(item) {
+        const promptJson = item?.prompt_json;
+        if (promptJson && typeof promptJson === "object" && !Array.isArray(promptJson)) return promptJson;
+        const text = getPromptText(item);
+        if (!text) return null;
+        try {
+          const payload = JSON.parse(text);
+          return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : null;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function modelNameLabel(item) {
+        const payload = parsePromptPayload(item);
+        if (!payload) return "-";
+        const values = [payload.model, payload.video_model, payload.image_model_name]
+          .map(v => String(v ?? "").trim())
+          .filter(Boolean);
+        if (!values.length) return "-";
+        return Array.from(new Set(values)).join(" / ");
       }
 
       /** 与后端 sora_task_executor._pick_n_frames 对齐 */
@@ -629,7 +655,7 @@
         document.getElementById("btnNextBottom").disabled = (offset + limit) >= total;
 
         if (!state.items.length) {
-          body.innerHTML = `<tr><td colspan="13" class="text-muted small">暂无任务</td></tr>`;
+          body.innerHTML = `<tr><td colspan="14" class="text-muted small">暂无任务</td></tr>`;
           return;
         }
 
@@ -638,6 +664,7 @@
           const typeName = state.typeMap.get(String(code)) || String(code);
           const nFramesResolved = resolveNFramesFromPromptItem(x);
           const mediaLabel = mediaKindLabel(x);
+          const modelLabel = modelNameLabel(x);
           const err = x.error_message || "";
           const pNum = Number(x?.progress);
           const progress = Number.isFinite(pNum) ? Math.max(0, Math.min(100, Math.trunc(pNum))) : null;
@@ -671,6 +698,7 @@
               <td class="mono truncate-1" title="${escapeHtml(windowIp)}">${escapeHtml(windowIp)}</td>
               <td>${escapeHtml(typeName)} <span class="text-muted mono">(${escapeHtml(code)})</span></td>
               <td class="text-nowrap" title="n_frames=${escapeHtml(String(nFramesResolved))}">${escapeHtml(mediaLabel)}</td>
+              <td class="mono truncate-1" style="max-width: 130px;" title="${escapeHtml(modelLabel)}">${escapeHtml(modelLabel)}</td>
               <td class="mono" style="max-width: 120px;">${escapeHtml(x.task_id || "")}</td>
               <td>${badgeForStatus(x.status)}${isCharacterCreation(x) ? ' <span class="badge text-bg-info">视频参考</span>' : ''}</td>
               <td>

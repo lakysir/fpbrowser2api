@@ -12,5 +12,4 @@ selenium
 playwright==1.48.0
 patchright
 Pillow
-oss2>=2.18.0
 

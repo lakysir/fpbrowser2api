@@ -68,7 +68,7 @@ function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
-function ossIso8601Now() {
+function amzIso8601Now() {
   const d = new Date();
   return (
     `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}` +
@@ -76,32 +76,29 @@ function ossIso8601Now() {
   );
 }
 
-function ossEncode(value) {
+function r2Encode(value) {
   return encodeURIComponent(String(value ?? "")).replace(/[!'()*]/g, ch =>
     "%" + ch.charCodeAt(0).toString(16).toUpperCase()
   );
 }
 
-function ossCanonicalObjectPath(bucket, objectKey) {
-  const b = String(bucket || "").trim();
+function r2EncodedObjectPath(bucket, objectKey) {
+  const b = r2Encode(String(bucket || "").trim());
   const key = String(objectKey || "").replace(/^\/+/, "");
-  const raw = `/${b ? `${b}/` : ""}${key}`;
-  return raw.split("/").map(ossEncode).join("/").replace(/%2F/gi, "/");
+  const encodedKey = key.split("/").map(r2Encode).join("/");
+  return `/${b}/${encodedKey}`;
 }
 
-function ossUrlObjectPath(objectKey) {
-  const key = String(objectKey || "").replace(/^\/+/, "");
-  return "/" + key.split("/").map(ossEncode).join("/");
-}
-
-function normalizeOssUploadConfig(raw) {
+function normalizeR2UploadConfig(raw) {
   const cfg = raw && typeof raw === "object" ? raw : {};
   const timeoutMs = Number(cfg.timeout_ms || cfg.timeoutMs || cfg.upload_timeout_ms || cfg.uploadTimeoutMs || 60000);
   const attempts = Number(cfg.attempts || cfg.upload_attempts || cfg.uploadAttempts || 3);
+  const provider = String(cfg.provider || "cloudflare_r2").trim().toLowerCase();
   return {
-    enabled: cfg.enabled !== false && String(cfg.provider || "aliyun_oss").toLowerCase() === "aliyun_oss",
+    enabled: cfg.enabled !== false && (provider === "cloudflare_r2" || provider === "r2"),
+    provider: "cloudflare_r2",
     endpoint: String(cfg.endpoint || "").trim(),
-    region: String(cfg.region || "").trim(),
+    region: String(cfg.region || "auto").trim() || "auto",
     bucket: String(cfg.bucket || "").trim(),
     publicBaseUrl: String(cfg.public_base_url || cfg.publicBaseUrl || "").trim(),
     accessKeyId: String(cfg.access_key_id || cfg.accessKeyId || "").trim(),
@@ -114,26 +111,23 @@ function normalizeOssUploadConfig(raw) {
   };
 }
 
-function ossEndpointForObject(cfg, objectKey) {
+function r2EndpointForObject(cfg, objectKey) {
   let raw = String(cfg.endpoint || "").trim();
-  if (!raw) throw new Error("OSS endpoint missing");
+  if (!raw) throw new Error("R2 endpoint missing");
   if (!/^https?:\/\//i.test(raw)) raw = "https://" + raw;
   const u = new URL(raw);
-  let host = u.host;
-  const bucketPrefix = `${cfg.bucket}.`;
-  if (cfg.bucket && !host.toLowerCase().startsWith(bucketPrefix.toLowerCase())) {
-    host = `${cfg.bucket}.${host}`;
-  }
-  return `${u.protocol}//${host}${ossUrlObjectPath(objectKey)}`;
+  const basePath = String(u.pathname || "").replace(/\/+$/, "");
+  return `${u.protocol}//${u.host}${basePath}${r2EncodedObjectPath(cfg.bucket, objectKey)}`;
 }
 
-function ossPublicUrl(cfg, objectKey, uploadUrl) {
+function r2PublicUrl(cfg, objectKey, uploadUrl) {
   const base = String(cfg.publicBaseUrl || "").trim();
   if (!base) return uploadUrl;
-  return `${base.replace(/\/+$/, "")}/${String(objectKey || "").replace(/^\/+/, "")}`;
+  const encodedKey = String(objectKey || "").replace(/^\/+/, "").split("/").map(r2Encode).join("/");
+  return `${base.replace(/\/+$/, "")}/${encodedKey}`;
 }
 
-function sanitizeOssPart(value, fallback = "item") {
+function sanitizeR2Part(value, fallback = "item") {
   const s = String(value || "").trim().replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   return s || fallback;
 }
@@ -162,12 +156,12 @@ function extensionForMime(mime) {
   return "png";
 }
 
-function buildOssObjectKey(cfg, options = {}) {
+function buildR2ObjectKey(cfg, options = {}) {
   const prefix = String(options.objectKeyPrefix || cfg.objectKeyPrefix || "fpbrowser2api/uploads")
     .replace(/^\/+|\/+$/g, "");
-  const ext = sanitizeOssPart(options.extension || extensionForMime(options.contentType), "bin");
-  const taskId = sanitizeOssPart(options.taskId || options.task_id || "", "");
-  const resolution = sanitizeOssPart(options.resolution || "", "");
+  const ext = sanitizeR2Part(options.extension || extensionForMime(options.contentType), "bin");
+  const taskId = sanitizeR2Part(options.taskId || options.task_id || "", "");
+  const resolution = sanitizeR2Part(options.resolution || "", "");
   const index = Math.max(1, Number(options.index || 1) || 1);
   const pieces = [dateStampLocal(), randomHex(4)];
   if (taskId) pieces.push(taskId.slice(0, 32));
@@ -196,69 +190,73 @@ async function dataUrlToBlob(dataUrl) {
   return new Blob([decodeURIComponent(m[3] || "")], { type: mime });
 }
 
-async function aliyunOssAuthorizationV4({ cfg, method, objectKey, headers }) {
-  const date = headers["x-oss-date"];
-  const shortDate = date.split("T")[0];
-  const canonicalHeaders = Object.keys(headers)
-    .map(k => k.toLowerCase())
-    .filter(k => k === "content-type" || k === "content-md5" || k.startsWith("x-oss-"))
-    .sort()
-    .map(k => `${k}:${String(headers[k] ?? "").trim()}\n`)
-    .join("");
+async function r2AuthorizationV4({ cfg, method, uploadUrl, contentType, payloadHash, amzDate }) {
+  const shortDate = amzDate.split("T")[0];
+  const host = new URL(uploadUrl).host;
+  const canonicalUri = new URL(uploadUrl).pathname;
+  const canonicalHeaders = [
+    `content-type:${contentType}\n`,
+    `host:${host}\n`,
+    `x-amz-content-sha256:${payloadHash}\n`,
+    `x-amz-date:${amzDate}\n`
+  ].join("");
+  const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
   const canonicalRequest = [
     String(method || "PUT").toUpperCase(),
-    ossCanonicalObjectPath(cfg.bucket, objectKey),
+    canonicalUri,
     "",
     canonicalHeaders,
-    "",
-    headers["x-oss-content-sha256"] || "UNSIGNED-PAYLOAD"
+    signedHeaders,
+    payloadHash
   ].join("\n");
-  const scope = `${shortDate}/${cfg.region}/oss/aliyun_v4_request`;
+  const scope = `${shortDate}/${cfg.region}/s3/aws4_request`;
   const stringToSign = [
-    "OSS4-HMAC-SHA256",
-    date,
+    "AWS4-HMAC-SHA256",
+    amzDate,
     scope,
     await sha256Hex(canonicalRequest)
   ].join("\n");
-  const kDate = await hmacSha256Bytes(utf8Bytes(`aliyun_v4${cfg.accessKeySecret}`), shortDate);
+  const kDate = await hmacSha256Bytes(utf8Bytes(`AWS4${cfg.accessKeySecret}`), shortDate);
   const kRegion = await hmacSha256Bytes(kDate, cfg.region);
-  const kOss = await hmacSha256Bytes(kRegion, "oss");
-  const kSigning = await hmacSha256Bytes(kOss, "aliyun_v4_request");
+  const kService = await hmacSha256Bytes(kRegion, "s3");
+  const kSigning = await hmacSha256Bytes(kService, "aws4_request");
   const signature = bytesToHex(await hmacSha256Bytes(kSigning, stringToSign));
-  return `OSS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${scope},Signature=${signature}`;
+  return `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${scope},SignedHeaders=${signedHeaders},Signature=${signature}`;
 }
 
 /**
- * 上传 Blob 到阿里云 OSS。
+ * Upload a Blob to Cloudflare R2 through its S3-compatible API.
  *
- * OSS 密钥必须由 Python 在当前任务 payload 中临时传入；本函数不读写 chrome.storage，
- * 避免插件发布包或本地持久化数据中包含密钥。
+ * R2 credentials are supplied by Python in the current task payload and are
+ * never persisted in chrome.storage.
  */
-export async function uploadBlobToAliyunOss(rawConfig, blob, options = {}) {
-  const cfg = normalizeOssUploadConfig(rawConfig);
-  if (!cfg.enabled) throw new Error("OSS upload disabled");
+export async function uploadBlobToR2(rawConfig, blob, options = {}) {
+  const cfg = normalizeR2UploadConfig(rawConfig);
+  if (!cfg.enabled) throw new Error("R2 upload disabled");
   if (!cfg.endpoint || !cfg.region || !cfg.bucket || !cfg.accessKeyId || !cfg.accessKeySecret) {
-    throw new Error("OSS upload config incomplete");
+    throw new Error("R2 upload config incomplete");
   }
-  if (!blob) throw new Error("OSS upload missing blob");
+  if (!blob) throw new Error("R2 upload missing blob");
 
   const contentType = String(options.contentType || blob.type || "application/octet-stream").trim();
-  const objectKey = String(options.objectKey || buildOssObjectKey(cfg, { ...options, contentType })).replace(/^\/+/, "");
-  const uploadUrl = ossEndpointForObject(cfg, objectKey);
-  const headers = {
-    "content-type": contentType,
-    "x-oss-content-sha256": "UNSIGNED-PAYLOAD",
-    "x-oss-date": ossIso8601Now()
-  };
-  if (cfg.securityToken) headers["x-oss-security-token"] = cfg.securityToken;
-  const authorization = await aliyunOssAuthorizationV4({ cfg, method: "PUT", objectKey, headers });
+  const objectKey = String(options.objectKey || buildR2ObjectKey(cfg, { ...options, contentType })).replace(/^\/+/, "");
+  const uploadUrl = r2EndpointForObject(cfg, objectKey);
+  const payloadHash = await sha256Hex(new Uint8Array(await blob.arrayBuffer()));
+  const amzDate = amzIso8601Now();
+  const authorization = await r2AuthorizationV4({
+    cfg,
+    method: "PUT",
+    uploadUrl,
+    contentType,
+    payloadHash,
+    amzDate
+  });
   const fetchHeaders = {
-    "Content-Type": headers["content-type"],
-    "x-oss-content-sha256": headers["x-oss-content-sha256"],
-    "x-oss-date": headers["x-oss-date"],
+    "Content-Type": contentType,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate,
     "Authorization": authorization
   };
-  if (cfg.securityToken) fetchHeaders["x-oss-security-token"] = cfg.securityToken;
 
   const timeoutMs = Math.max(5000, Number(options.timeoutMs || options.timeout_ms || cfg.timeoutMs || 60000) || 60000);
   const attempts = Math.max(1, Math.min(5, Math.floor(Number(options.attempts || cfg.attempts || 3) || 3)));
@@ -279,77 +277,44 @@ export async function uploadBlobToAliyunOss(rawConfig, blob, options = {}) {
       });
       if (resp.ok || resp.status < 500 || attempt >= attempts) break;
       const text = await resp.text().catch(() => "");
-      lastErr = new Error(`OSS upload HTTP ${resp.status}: ${String(text).slice(0, 500)}`);
+      lastErr = new Error(`R2 upload HTTP ${resp.status}: ${String(text).slice(0, 500)}`);
     } catch (e) {
       const msg = String((e && e.message) || e || "");
-      lastErr = new Error((e && e.name) === "AbortError" ? `OSS upload timeout after ${timeoutMs}ms` : `OSS upload failed: ${msg}`);
+      lastErr = new Error((e && e.name) === "AbortError" ? `R2 upload timeout after ${timeoutMs}ms` : `R2 upload failed: ${msg}`);
       if (attempt >= attempts) throw lastErr;
     } finally {
       clearTimeout(timer);
     }
     await new Promise(resolve => setTimeout(resolve, 500 * attempt));
   }
-  if (!resp) throw lastErr || new Error("OSS upload failed");
+  if (!resp) throw lastErr || new Error("R2 upload failed");
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`OSS upload HTTP ${resp.status}: ${String(text).slice(0, 500)}`);
+    throw new Error(`R2 upload HTTP ${resp.status}: ${String(text).slice(0, 500)}`);
   }
   return {
-    url: ossPublicUrl(cfg, objectKey, uploadUrl),
+    url: r2PublicUrl(cfg, objectKey, uploadUrl),
     upload_url: uploadUrl,
     object_key: objectKey,
     content_type: contentType,
     size: blob.size || 0,
     bucket: cfg.bucket,
     region: cfg.region,
+    provider: cfg.provider,
     duration_ms: Date.now() - startedAt
   };
 }
 
-export async function createAliyunOssPutTarget(rawConfig, options = {}) {
-  const cfg = normalizeOssUploadConfig(rawConfig);
-  if (!cfg.enabled) throw new Error("OSS upload disabled");
-  if (!cfg.endpoint || !cfg.region || !cfg.bucket || !cfg.accessKeyId || !cfg.accessKeySecret) {
-    throw new Error("OSS upload config incomplete");
-  }
-  const contentType = String(options.contentType || "application/octet-stream").trim();
-  const objectKey = String(options.objectKey || buildOssObjectKey(cfg, { ...options, contentType })).replace(/^\/+/, "");
-  const uploadUrl = ossEndpointForObject(cfg, objectKey);
-  const headers = {
-    "content-type": contentType,
-    "x-oss-content-sha256": "UNSIGNED-PAYLOAD",
-    "x-oss-date": ossIso8601Now()
-  };
-  if (cfg.securityToken) headers["x-oss-security-token"] = cfg.securityToken;
-  const authorization = await aliyunOssAuthorizationV4({ cfg, method: "PUT", objectKey, headers });
-  const fetchHeaders = {
-    "Content-Type": headers["content-type"],
-    "x-oss-content-sha256": headers["x-oss-content-sha256"],
-    "x-oss-date": headers["x-oss-date"],
-    "Authorization": authorization
-  };
-  if (cfg.securityToken) fetchHeaders["x-oss-security-token"] = cfg.securityToken;
-  return {
-    url: ossPublicUrl(cfg, objectKey, uploadUrl),
-    upload_url: uploadUrl,
-    object_key: objectKey,
-    content_type: contentType,
-    bucket: cfg.bucket,
-    region: cfg.region,
-    headers: fetchHeaders
-  };
-}
-
-export async function uploadDataUrlToAliyunOss(rawConfig, dataUrl, options = {}) {
+export async function uploadDataUrlToR2(rawConfig, dataUrl, options = {}) {
   const s = String(dataUrl || "");
-  if (!/^data:(image|video)\//i.test(s)) throw new Error("OSS upload only accepts image/video data URL");
+  if (!/^data:(image|video)\//i.test(s)) throw new Error("R2 upload only accepts image/video data URL");
   const contentType = String(options.contentType || dataUrlMime(s)).trim();
   const blob = await dataUrlToBlob(s);
-  return await uploadBlobToAliyunOss(rawConfig, blob, { ...options, contentType });
+  return await uploadBlobToR2(rawConfig, blob, { ...options, contentType });
 }
 
-export async function uploadDataUrlListToAliyunOss(values, rawConfig, options = {}) {
-  const cfg = normalizeOssUploadConfig(rawConfig);
+export async function uploadDataUrlListToR2(values, rawConfig, options = {}) {
+  const cfg = normalizeR2UploadConfig(rawConfig);
   const input = Array.isArray(values) ? values : [];
   if (!cfg.enabled) return { values: input.slice(), uploads: [], skipped: true };
 
@@ -371,13 +336,13 @@ export async function uploadDataUrlListToAliyunOss(values, rawConfig, options = 
     if (options.runtime && typeof options.runtime.progress === "function") {
       try {
         await options.runtime.progress(options.progress || 92, {
-          stage: options.stage || "oss_upload",
+          stage: options.stage || "r2_upload",
           index: uploadIndex,
           total: input.filter(x => /^data:(image|video)\//i.test(String(x || ""))).length
         });
       } catch (_) {}
     }
-    const uploaded = await uploadDataUrlToAliyunOss(cfg, value, {
+    const uploaded = await uploadDataUrlToR2(cfg, value, {
       ...options,
       index: uploadIndex,
       contentType: dataUrlMime(value)
@@ -385,7 +350,7 @@ export async function uploadDataUrlListToAliyunOss(values, rawConfig, options = 
     if (options.runtime && typeof options.runtime.progress === "function") {
       try {
         await options.runtime.progress(Math.min(99, (options.progress || 92) + 1), {
-          stage: `${options.stage || "oss_upload"}_done`,
+          stage: `${options.stage || "r2_upload"}_done`,
           index: uploadIndex,
           total: input.filter(x => /^data:(image|video)\//i.test(String(x || ""))).length,
           size: uploaded.size || 0,

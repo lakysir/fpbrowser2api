@@ -28,7 +28,7 @@ from ..core.logger import logger
 from ..core.paths import MONITOR_LOG_FILE
 from .browser_extension_bridge import should_use_extension_executor
 from .browser_extension_interaction import ensure_extension_connected_via_window, submit_extension_task, wait_extension_client
-from .oss_uploader import oss_config_from_setting_section
+from .r2_uploader import r2_config_from_setting_section
 from .playwright_broswer_context import append_log, safe_trim
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 from .veo_workflow_executor import (
@@ -282,13 +282,13 @@ def _gpt_apply_image2_payload_defaults(payload: Dict[str, Any]) -> Dict[str, Any
     return p
 
 
-def _gpt_extension_oss_upload_config(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """为浏览器插件下发一次性 OSS 上传参数。
+def _gpt_extension_r2_upload_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """为浏览器插件下发一次性 R2 上传参数。
 
     注意：这些参数只随当前 task.start WebSocket 消息下发，插件侧不会持久化。
     gpt-image-2 的 1K/2K/4K 都启用：2K/4K 避免大 dataURL 通过 WebSocket 返回导致
     ``extension client replaced`` / 连接断开；1K 的 ChatGPT estuary/content 链接离开
-    登录页面后无权限访问，也需要在插件页面内下载后上传 OSS。
+    登录页面后无权限访问，也需要在插件页面内下载后上传 R2。
     """
     p = payload or {}
     if not _gpt_is_image2_payload(p):
@@ -296,29 +296,29 @@ def _gpt_extension_oss_upload_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     resolution = _gpt_image2_resolution(p)
     if resolution not in {"1k", "2k", "4k"}:
         return {}
-    # 可通过 payload 关闭：gpt_image2_oss_upload=false / extension_oss_upload=false。
-    if not _bool(p.get("gpt_image2_oss_upload", p.get("extension_oss_upload", True)), True):
+    # 可通过 payload 关闭：gpt_image2_r2_upload=false / extension_r2_upload=false。
+    if not _bool(p.get("gpt_image2_r2_upload", p.get("extension_r2_upload", True)), True):
         return {}
 
-    oss_cfg = oss_config_from_setting_section((app_config.get_raw_config() or {}).get("oss"))
-    if not oss_cfg.enabled:
+    r2_cfg = r2_config_from_setting_section((app_config.get_raw_config() or {}).get("r2"))
+    if not r2_cfg.enabled:
         return {}
 
-    ak = (oss_cfg.access_key_id or os.environ.get("OSS_ACCESS_KEY_ID") or "").strip()
-    sk = (oss_cfg.access_key_secret or os.environ.get("OSS_ACCESS_KEY_SECRET") or "").strip()
-    if not (oss_cfg.endpoint and oss_cfg.region and oss_cfg.bucket and ak and sk):
+    access_key_id = (r2_cfg.access_key_id or os.environ.get("R2_ACCESS_KEY_ID") or "").strip()
+    access_key_secret = (r2_cfg.access_key_secret or os.environ.get("R2_ACCESS_KEY_SECRET") or "").strip()
+    if not (r2_cfg.endpoint and r2_cfg.region and r2_cfg.bucket and access_key_id and access_key_secret):
         # 配置不完整时不下发，保持旧逻辑；真正上传错误由插件侧抛出小错误，不返回大图。
         return {}
 
     return {
         "enabled": True,
-        "provider": "aliyun_oss",
-        "endpoint": oss_cfg.endpoint,
-        "region": oss_cfg.region,
-        "bucket": oss_cfg.bucket,
-        "public_base_url": oss_cfg.public_base_url,
-        "access_key_id": ak,
-        "access_key_secret": sk,
+        "provider": "cloudflare_r2",
+        "endpoint": r2_cfg.endpoint,
+        "region": r2_cfg.region,
+        "bucket": r2_cfg.bucket,
+        "public_base_url": r2_cfg.public_base_url,
+        "access_key_id": access_key_id,
+        "access_key_secret": access_key_secret,
         # 插件会在该前缀后追加时间戳、随机串和序号；不要把密钥写入插件 storage。
         "object_key_prefix": f"gpt_workflow/image/gpt-image-2/{resolution}",
         "required": True,
@@ -426,34 +426,6 @@ def _gpt_rewrite_ref_value_for_extension(value: Any, url_map: Dict[str, str]) ->
             if raw in url_map:
                 out["image_url"] = url_map[raw]
         return out
-    return value
-
-
-_GPT_OSS_ACCELERATE_HOST = "foco-aimh8.oss-accelerate.aliyuncs.com"
-_GPT_OSS_ACCELERATE_SOURCE_HOSTS = (
-    "oss.aimh8.com",
-    "foco-aimh8.oss-cn-hangzhou.aliyuncs.com",
-)
-
-
-def _gpt_rewrite_aimh8_oss_to_accelerate(value: Any) -> Any:
-    """把 aimh8 国内 OSS/CDN 图片地址改为 OSS 传输加速域名。
-
-    2K/4K Codex responses 分支会让 OpenAI/Codex 后端直接拉取 image_url；
-    国内 OSS/CDN 对海外链路容易超时，因此在下发插件前统一改写。
-    """
-    if isinstance(value, str):
-        out = value
-        for host in _GPT_OSS_ACCELERATE_SOURCE_HOSTS:
-            out = out.replace(f"https://{host}", f"https://{_GPT_OSS_ACCELERATE_HOST}")
-            out = out.replace(f"http://{host}", f"https://{_GPT_OSS_ACCELERATE_HOST}")
-        return out
-    if isinstance(value, list):
-        return [_gpt_rewrite_aimh8_oss_to_accelerate(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_gpt_rewrite_aimh8_oss_to_accelerate(item) for item in value)
-    if isinstance(value, dict):
-        return {k: _gpt_rewrite_aimh8_oss_to_accelerate(v) for k, v in value.items()}
     return value
 
 
@@ -1578,8 +1550,6 @@ async def gpt_submit_task_via_extension(
             progress_cb=progress_cb,
             log_file=MONITOR_LOG_FILE,
         )
-    else:
-        p = _gpt_rewrite_aimh8_oss_to_accelerate(p)
     print(f"p:{p}");
     kind = "video" if _is_video_payload(p) else "image"
     max_wait = float(p.get("max_wait_seconds") or p.get("gpt_pending_max_wait_seconds") or timeout_seconds or 600.0)
@@ -1598,9 +1568,9 @@ async def gpt_submit_task_via_extension(
             "poll_interval_seconds": float(p.get("poll_interval_seconds") or p.get("gpt_pending_poll_interval_seconds") or 10.0),
         }
     )
-    oss_upload = _gpt_extension_oss_upload_config(p)
-    if oss_upload:
-        ext_payload["oss_upload"] = oss_upload
+    r2_upload = _gpt_extension_r2_upload_config(p)
+    if r2_upload:
+        ext_payload["r2_upload"] = r2_upload
     return await submit_extension_task(
         space_id=space_id,
         window_key=window_key,

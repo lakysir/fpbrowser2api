@@ -33,6 +33,7 @@ class SystemConfig(BaseModel):
     log_to_file: bool = False
     # 开关：停止接收新任务（维护模式）
     stop_accepting_tasks: bool = False
+    skip_video_watermark_remove: bool = False
     # 对外创建任务并发上限（必须为 3 的整数倍）
     public_create_task_max_inflight: int = 180
     # 服务器数量（用于计算每台服务器的并发量）
@@ -189,6 +190,7 @@ class TaskType(BaseModel):
     code: str  # 英文唯一
     project_id: Optional[int] = None  # 绑定项目（为空表示不限制）
     concurrency: int = 1
+    total_concurrency: int = 100
     continuous_error_threshold: int = 3
     continuous_error_close_window_threshold: int = 3
     timeout_seconds: int = 1800

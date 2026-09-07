@@ -62,7 +62,7 @@
         </div>
         <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
         <a class="btn btn-warning btn-sm me-3" href="https://roxybrowser.com/?code=0416Z62A" target="_blank" rel="noopener noreferrer">Roxy浏览器下载</a>
-        <a class="btn btn-danger btn-sm me-3" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
+        <a class="btn btn-danger btn-sm me-3" href="https://www.webshare.io/?referral_code=jy4yn1bfchnz" target="_blank" rel="noopener noreferrer">购买代理IP</a>
         <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
@@ -213,7 +213,7 @@
           <div class="modal-header">
             <div class="d-flex align-items-center gap-2">
               <h5 class="modal-title mb-0" id="proxiesModalTitle">代理列表</h5>
-              <a class="btn btn-danger btn-sm fw-semibold" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
+              <a class="btn btn-danger btn-sm fw-semibold" href="https://www.webshare.io/?referral_code=jy4yn1bfchnz" target="_blank" rel="noopener noreferrer">购买代理IP</a>
               <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-1 py-0" id="btnProxyDetectChannels" title="查询 RoxyBrowser /proxy/detect_channel">检测渠道</button>
             </div>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -3118,6 +3118,7 @@
       const proxiesImportText = document.getElementById("proxiesImportText");
       const btnImportProxies = document.getElementById("btnImportProxies");
       const proxyImportSummary = document.getElementById("proxyImportSummary");
+      const proxyImportProtocol = document.getElementById("proxyImportProtocol");
       const btnProxyDetectChannels = document.getElementById("btnProxyDetectChannels");
       const proxyDetectChannelsPanel = document.getElementById("proxyDetectChannelsPanel");
       const proxyRemarkModalTitle = document.getElementById("proxyRemarkModalTitle");
@@ -4122,7 +4123,7 @@
         proxiesFilter.value = "";
         selectedProxyIds.clear();
         updateProxySelectionUi();
-        if (proxyImportSummary) proxyImportSummary.textContent = "按 IP 匹配本地 DB；存在则同步修改指纹浏览器代理并刷新创建时间，不存在则先创建到指纹浏览器；新代理默认协议 SOCKS5。";
+        if (proxyImportSummary) proxyImportSummary.textContent = "按 IP 匹配本地 DB；存在则同步修改指纹浏览器代理并刷新创建时间，不存在则先创建到指纹浏览器。";
         hideProxyDetectChannelsPanel();
         proxiesModal.show();
         await refreshProxies(spacePk);
@@ -4207,7 +4208,7 @@
         if (!content) return toast("请先粘贴代理数据", "error");
         const lines = content.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
         if (!lines.length) return toast("请先粘贴代理数据", "error");
-        const protocol = String(document.getElementById("proxyImportProtocol")?.value || "SOCKS5").toUpperCase();
+        const protocol = String(proxyImportProtocol?.value || "SOCKS5").toUpperCase();
         if (!confirm(`确定导入/更新 ${lines.length} 行代理吗？\n\n格式：IP地址:端口:账号:密码\n检测渠道将统一使用 IPRust.io\n协议：${protocol}`)) return;
         try {
           setProxiesLoading(true);

@@ -34,14 +34,36 @@ task_timeout_seconds = 1800
 default_model = "gpt-5.5"
 api_key = ""
 
-# VEO 2K 放大图为 JPEG 字节；启用后上传到 OSS，任务结果里 upsample_url 存公网 URL，避免大 base64 撑爆数据库
-[oss]
+# 视频后处理（去水印 / 1080p 超分）：两者都由外部服务 onnx_watermark_service 提供。
+# 默认全部关闭：未部署该服务时不会产生任何外部请求，视频结果保持原样返回。
+[video_postprocess]
+# Whether to mosaic faces in VEO reference images and videos; false skips the mosaic service
+face_mosaic = true
+# 生成成功后把视频交给外部服务去水印
+remove_watermark = false
+# *-1080p 模型：去水印之后再做一次 1080p 超分，成功则返回超分地址
+upscale_1080p = false
+# 外部服务根地址（去水印 POST {base}/process-video，超分 POST/GET {base}/v1/videos）
+service_base_url = ""
+# 后处理服务按顺序尝试；用于人脸马赛克和 1080p 超分，未配置时使用 service_base_url
+service_base_urls = []
+# 超分总时长上限（秒）；含名额满时的重试等待。超时按失败处理，返回超分前的地址
+upscale_timeout_seconds = 1500
+# 超分名额满（HTTP 503）时的重试间隔（秒）；<=0 表示不重试，直接按失败处理
+upscale_retry_interval_seconds = 20
+
+[comfyui_dispatch]
+# Centralized ComfyUI scheduler used by watermark_tasks admin status.
+base_url = "http://127.0.0.1:8891"
+
+# Generated images are uploaded to Cloudflare R2 so task results contain public URLs instead of large data URLs.
+[r2]
 enabled = false
-endpoint = "https://oss-cn-hangzhou.aliyuncs.com"
-region = "cn-hangzhou"
+endpoint = "https://<account-id>.r2.cloudflarestorage.com"
+region = "auto"
 bucket = "your-bucket"
-public_base_url = "https://your-cdn.example.com/"
-# 密钥可用 access_key_id / access_key_secret，或 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（与 comfyui_async_service 一致）
+public_base_url = "https://pub-<bucket-id>.r2.dev"
+# Credentials may also be supplied through R2_ACCESS_KEY_ID / R2_ACCESS_KEY_SECRET.
 # access_key_id = ""
 # access_key_secret = ""
 

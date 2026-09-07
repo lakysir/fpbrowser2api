@@ -52,7 +52,7 @@ from .playwright_broswer_context import (
 from .sora_task_executor import (
     _pick_n_frames,
 )
-from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
+from .r2_uploader import build_veo_upsample_object_key, r2_config_from_setting_section, upload_bytes_to_r2
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 from .browser_extension_bridge import should_use_extension_executor
 from .browser_extension_interaction import (
@@ -60,6 +60,7 @@ from .browser_extension_interaction import (
     submit_extension_task,
     wait_extension_client,
 )
+from .postprocess_dispatch import round_robin_order
 
 
 async def _noop_progress_cb(progress: int, data: Dict[str, Any]) -> None:
@@ -234,6 +235,16 @@ def _veo_local_download_headers(kind: str, source_url: str) -> Dict[str, str]:
     if is_wikimedia:
         headers.setdefault("Accept-Language", "en-US,en;q=0.9")
     return headers
+
+
+def _veo_ipv4_httpx_transport() -> httpx.AsyncHTTPTransport:
+    """Use an IPv4 source socket for VEO media downloads.
+
+    R2/Cloudflare IPv6 paths can intermittently stall while the IPv4 path is
+    healthy. Binding the transport avoids relying on system address ordering
+    (which is only a preference and can still allow IPv6 selection).
+    """
+    return httpx.AsyncHTTPTransport(local_address="0.0.0.0")
 
 
 def _veo_payload_flag_is_false(v: Any) -> bool:
@@ -737,7 +748,12 @@ async def _veo_download_url_to_local_image_cache(source_url: str) -> Path:
         headers = _veo_local_download_headers("image", source_url)
         try:
             async with _VEO_LOCAL_IMAGE_DOWNLOAD_SEMAPHORE:
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    trust_env=False,
+                    transport=_veo_ipv4_httpx_transport(),
+                ) as client:
                     async with client.stream("GET", source_url, headers=headers) as resp:
                         status = int(resp.status_code or 0)
                         if status >= 400:
@@ -863,7 +879,12 @@ async def _veo_download_url_to_local_video_cache(source_url: str) -> Path:
         headers = _veo_local_download_headers("video", source_url)
         try:
             async with _VEO_LOCAL_IMAGE_DOWNLOAD_SEMAPHORE:
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    trust_env=False,
+                    transport=_veo_ipv4_httpx_transport(),
+                ) as client:
                     async with client.stream("GET", source_url, headers=headers) as resp:
                         status = int(resp.status_code or 0)
                         if status >= 400:
@@ -978,7 +999,7 @@ async def _veo_materialize_image_for_extension(
         max_data_image_bytes = 500 * 1024
         if len(data) > max_data_image_bytes:
             raise NonPenalizedTaskError(
-                f"VEO 输入图片 data base64 数据不能超过 500KB，当前约 {len(data) / 1024:.1f}KB",
+                f"单张参考图base64数据不能超过500KB，当前约 {len(data) / 1024:.1f}KB，推荐上传到第三方[https://otc.mirrmart.com/dqc_play/fpOpenApi]接口后传递网址url",
                 status_code=400,
                 content_violation=True,
             )
@@ -1061,9 +1082,9 @@ async def _veo_materialize_video_for_extension(
     if not raw or _veo_is_local_asset_url(raw):
         return raw
     parsed = urlparse(raw)
-    if parsed.scheme.lower() not in {"http", "https", "data"}:
+    if parsed.scheme.lower() not in {"http", "https"}:
         raise NonPenalizedTaskError(
-            f"VEO 输入视频地址协议不支持：仅支持 http/https/data URL，got={safe_trim(raw, 300)!r}",
+            f"VEO 输入视频地址协议不支持：仅支持 http/https URL，got={safe_trim(raw, 300)!r}",
             status_code=400,
             content_violation=True,
         )
@@ -1076,23 +1097,12 @@ async def _veo_materialize_video_for_extension(
                 "kind": kind,
                 "index": 1,
                 "total": 1,
-                "source_host": parsed.netloc if parsed.scheme != "data" else "data-url",
+                "source_host": parsed.netloc,
             },
         )
     except Exception:
         pass
-    if parsed.scheme.lower() == "data":
-        m = re.match(r"^data:(video/[a-zA-Z0-9.+-]+|application/octet-stream);base64,(.*)$", raw, flags=re.S)
-        if not m:
-            raise NonPenalizedTaskError("VEO 输入视频 data URL 格式不支持：仅支持 data:video/...;base64,...", status_code=400)
-        mime = m.group(1)
-        try:
-            data = base64.b64decode(m.group(2), validate=False)
-        except Exception as e:
-            raise NonPenalizedTaskError(f"VEO 输入视频 data URL 解码失败：{safe_trim(str(e), 300)}", status_code=400) from e
-        local_path = await _veo_write_bytes_to_local_video_cache(data, content_type=mime, source_label=f"data:{mime}")
-    else:
-        local_path = await _veo_download_url_to_local_video_cache(raw)
+    local_path = await _veo_download_url_to_local_video_cache(raw)
     local_url = _veo_local_asset_url(local_path)
     append_log(
         log_file,
@@ -1103,6 +1113,302 @@ async def _veo_materialize_video_for_extension(
     except Exception:
         pass
     return local_url
+
+
+class _VeoMosaicServiceConnectionError(Exception):
+    """A mosaic endpoint could not establish a connection."""
+
+
+def _veo_mosaic_service_endpoint(value: Any) -> str:
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if raw.endswith("/process-media-face-grid"):
+        return raw
+    return f"{raw}/process-media-face-grid"
+
+
+def _veo_reference_video_face_mosaic_service_urls(payload: Dict[str, Any]) -> List[str]:
+    payload = payload or {}
+    configured: Any = (
+        payload.get("reference_video_face_mosaic_service_urls")
+        or os.environ.get("VEO_REFERENCE_VIDEO_FACE_MOSAIC_SERVICE_URLS")
+    )
+    if configured:
+        candidates = configured if isinstance(configured, list) else str(configured).split(",")
+    else:
+        explicit = (
+            payload.get("reference_video_face_mosaic_service_url")
+            or os.environ.get("VEO_REFERENCE_VIDEO_FACE_MOSAIC_SERVICE_URL")
+            or os.environ.get("ONNX_WATERMARK_SERVICE_BASE_URL")
+        )
+        if explicit:
+            candidates = [explicit]
+        else:
+            candidates = getattr(app_config, "video_postprocess_service_base_urls", None) or [
+                getattr(app_config, "video_postprocess_service_base_url", "")
+                or "http://127.0.0.1:8791"
+            ]
+
+    urls: List[str] = []
+    for candidate in candidates:
+        endpoint = _veo_mosaic_service_endpoint(candidate)
+        if endpoint and endpoint not in urls:
+            urls.append(endpoint)
+    return urls or ["http://127.0.0.1:8791/process-media-face-grid"]
+
+
+def _veo_reference_video_face_mosaic_service_url(payload: Dict[str, Any]) -> str:
+    return _veo_reference_video_face_mosaic_service_urls(payload)[0]
+
+
+async def _veo_mosaic_reference_video(
+    source_url: str,
+    *,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+) -> str:
+    service_url = _veo_reference_video_face_mosaic_service_url(payload)
+    timeout_seconds = _veo_float_env(
+        "VEO_REFERENCE_VIDEO_FACE_MOSAIC_TIMEOUT_SECONDS",
+        900.0,
+        min_value=30.0,
+        max_value=7200.0,
+    )
+    request_payload = {
+        "media_url": str(source_url or "").strip(),
+        "mask_style": "mosaic_skin",
+        "mosaic_expand_ratio": 0.01,
+        "mosaic_size": 16,
+        "mosaic_blur_radius": 2,
+        "mosaic_strength": 1.0,
+    }
+    append_log(
+        log_file,
+        "[veo][reference-video-mosaic] start "
+        f"source={safe_trim(source_url, 260)!r} service={service_url!r} timeout={timeout_seconds}s",
+    )
+    try:
+        await progress_cb(
+            4,
+            {"stage": "reference_video_face_mosaic_start", "video_url": source_url, "service_url": service_url},
+        )
+    except Exception:
+        pass
+    try:
+        timeout = httpx.Timeout(timeout_seconds, connect=20.0, read=timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+            response = await client.post(service_url, json=request_payload)
+            try:
+                data = response.json()
+            except ValueError:
+                data = {}
+            if response.status_code >= 400:
+                detail = data.get("detail") if isinstance(data, dict) else None
+                if isinstance(detail, dict):
+                    detail_message = detail.get("message") or detail.get("error") or ""
+                else:
+                    detail_message = detail or (data.get("message") if isinstance(data, dict) else "")
+                message = str(detail_message or response.reason_phrase or "request failed").strip()
+                if 400 <= response.status_code < 500:
+                    raise NonPenalizedTaskError(
+                        f"参考视频人脸预处理失败：{message}",
+                        status_code=response.status_code,
+                        content_violation=True,
+                    )
+                response.raise_for_status()
+        if not isinstance(data, dict) or data.get("ok") is False:
+            raise RuntimeError(f"reference video mosaic service returned failure: {safe_trim(str(data), 500)}")
+        output_url = str(data.get("output_url") or "").strip()
+        if not output_url:
+            raise RuntimeError("reference video mosaic service returned no output_url")
+        append_log(
+            log_file,
+            "[veo][reference-video-mosaic] done "
+            f"source={safe_trim(source_url, 220)!r} output={safe_trim(output_url, 260)!r} "
+            f"faces={data.get('face_count') or data.get('max_face_count') or 0}",
+        )
+        try:
+            await progress_cb(
+                5,
+                {"stage": "reference_video_face_mosaic_done", "video_url": output_url},
+            )
+        except Exception:
+            pass
+        return output_url
+    except asyncio.CancelledError:
+        raise
+    except NonPenalizedTaskError:
+        raise
+    except Exception as exc:
+        append_log(log_file, f"[veo][reference-video-mosaic] failed: {exc}")
+        raise RuntimeError(f"参考视频人脸预处理失败：{exc}") from exc
+
+
+async def _veo_mosaic_reference_media(
+    source_url: str,
+    *,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+    kind: str = "image",
+    service_url: Optional[str] = None,
+) -> tuple[str, int]:
+    """Mask one reference, failing over only when a connection cannot be established."""
+    candidates = (
+        [_veo_mosaic_service_endpoint(service_url)]
+        if service_url
+        else round_robin_order(_veo_reference_video_face_mosaic_service_urls(payload))
+    )
+    last_error: Optional[_VeoMosaicServiceConnectionError] = None
+    for index, candidate in enumerate(candidates):
+        try:
+            return await _veo_mosaic_reference_media_once(
+                source_url,
+                payload=payload,
+                progress_cb=progress_cb,
+                log_file=log_file,
+                kind=kind,
+                service_url=candidate,
+            )
+        except _VeoMosaicServiceConnectionError as exc:
+            last_error = exc
+            if index + 1 < len(candidates):
+                append_log(
+                    log_file,
+                    f"[veo][reference-{kind}-mosaic] service unavailable; switching to {candidates[index + 1]!r}: {exc}",
+                )
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"reference {kind} face mosaic has no configured service")
+
+
+async def _veo_mosaic_reference_media_batch(
+    source_urls: List[str],
+    *,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+    kind: str = "image",
+) -> List[Tuple[str, int]]:
+    """Process a whole batch on one endpoint, restarting it on failover."""
+    # Keep one batch on one preferred endpoint, but rotate that preference
+    # between tasks and continue cyclically when the endpoint is unreachable.
+    candidates = round_robin_order(_veo_reference_video_face_mosaic_service_urls(payload))
+    last_error: Optional[_VeoMosaicServiceConnectionError] = None
+    for index, service_url in enumerate(candidates):
+        results: List[Tuple[str, int]] = []
+        try:
+            for source_url in source_urls:
+                results.append(
+                    await _veo_mosaic_reference_media(
+                        source_url,
+                        payload=payload,
+                        progress_cb=progress_cb,
+                        log_file=log_file,
+                        kind=kind,
+                        service_url=service_url,
+                    )
+                )
+            return results
+        except _VeoMosaicServiceConnectionError as exc:
+            last_error = exc
+            if index + 1 < len(candidates):
+                append_log(
+                    log_file,
+                    f"[veo][reference-{kind}-mosaic] batch connection failed after "
+                    f"{len(results)}/{len(source_urls)} items; restarting entire batch on {candidates[index + 1]!r}",
+                )
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+async def _veo_mosaic_reference_media_once(
+    source_url: str,
+    *,
+    payload: Dict[str, Any],
+    progress_cb: ProgressCB,
+    log_file: Optional[Path],
+    kind: str,
+    service_url: str,
+) -> tuple[str, int]:
+    """Mask faces in a reference image/video and return (URL, detected face count)."""
+    source_url = str(source_url or "").strip()
+    parsed_source = urlparse(source_url)
+    if parsed_source.scheme.lower() not in {"http", "https"}:
+        # The masking service accepts public URLs only; preserve data/local
+        # references and let the existing uploader handle them.
+        return source_url, 0
+    timeout_seconds = _veo_float_env("VEO_REFERENCE_VIDEO_FACE_MOSAIC_TIMEOUT_SECONDS", 900.0, min_value=30.0, max_value=7200.0)
+    request_payload = {"media_url": str(source_url or "").strip(), "mask_style": "mosaic_skin", "mosaic_expand_ratio": 0.01, "mosaic_size": 16, "mosaic_blur_radius": 2, "mosaic_strength": 1.0}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=20.0, read=timeout_seconds), follow_redirects=True, trust_env=False) as client:
+            response = await client.post(service_url, json=request_payload)
+            data = response.json() if response.content else {}
+            if response.status_code >= 400:
+                detail = data.get("detail") if isinstance(data, dict) else None
+                if isinstance(detail, dict):
+                    detail_message = detail.get("message") or detail.get("error") or detail.get("code") or ""
+                else:
+                    detail_message = detail or (data.get("message") if isinstance(data, dict) else "")
+                message = str(detail_message or response.reason_phrase or "request failed").strip()
+                if response.status_code == 422 and kind == "video" and (
+                    not message or message.lower() == "unprocessable entity"
+                ):
+                    message = "video exceeds 1080P resolution"
+                if 400 <= response.status_code < 500:
+                    raise NonPenalizedTaskError(
+                        f"参考{kind}人脸预处理失败：{message}",
+                        status_code=response.status_code,
+                        content_violation=True,
+                    )
+                response.raise_for_status()
+        if not isinstance(data, dict) or data.get("ok") is False:
+            raise RuntimeError(f"reference {kind} face mosaic failed: {safe_trim(str(data), 500)}")
+        output_url = str(data.get("output_url") or source_url or "").strip()
+        if not output_url:
+            raise RuntimeError(f"reference {kind} face mosaic returned no output_url")
+        try:
+            face_count = int(data.get("face_count") or data.get("max_face_count") or 0)
+        except (TypeError, ValueError):
+            face_count = 0
+        append_log(log_file, f"[veo][reference-{kind}-mosaic] source={safe_trim(source_url, 180)!r} output={safe_trim(output_url, 220)!r} faces={face_count}")
+        return output_url, max(0, face_count)
+    except asyncio.CancelledError:
+        raise
+    except NonPenalizedTaskError:
+        raise
+    except (httpx.NetworkError, httpx.ConnectTimeout) as exc:
+        append_log(log_file, f"[veo][reference-{kind}-mosaic] unreachable service={service_url!r}: {exc}")
+        raise _VeoMosaicServiceConnectionError(
+            f"reference {kind} face mosaic service unreachable ({service_url}): {exc}"
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        response = exc.response
+        detail_message = ""
+        try:
+            error_data = response.json()
+        except (ValueError, TypeError):
+            error_data = {}
+        if isinstance(error_data, dict):
+            detail = error_data.get("detail")
+            if isinstance(detail, dict):
+                detail_message = str(detail.get("message") or detail.get("error") or detail.get("code") or "")
+            else:
+                detail_message = str(detail or error_data.get("message") or "")
+        detail_message = detail_message.strip() or str(response.text or "").strip() or str(exc)
+        if 400 <= response.status_code < 500:
+            raise NonPenalizedTaskError(
+                f"reference {kind} face mosaic failed: {detail_message}",
+                status_code=response.status_code,
+                content_violation=True,
+            ) from exc
+        raise
+    except Exception as exc:
+        append_log(log_file, f"[veo][reference-{kind}-mosaic] failed: {exc}")
+        raise RuntimeError(f"reference {kind} face mosaic failed: {exc}") from exc
 
 
 async def refresh_veo_balance_via_extension(
@@ -1213,52 +1519,59 @@ async def refresh_veo_balance_via_extension(
         return None
 
 
-def _veo_extension_oss_upload_config(payload: Dict[str, Any], *, resolution_label: str = "") -> Dict[str, Any]:
-    """? VEO ?????????? OSS ?????\n\n    ???? task.start WebSocket ????????????????? VEO ?? 2K/4K\n    upsample ? base64 ???????? OSS???? data URL ?? Python ???\n    """
+def _veo_extension_r2_upload_config(payload: Dict[str, Any], *, resolution_label: str = "") -> Dict[str, Any]:
+    """Build the one-task R2 upload configuration sent to the extension."""
     p = payload or {}
-    if not _veo_env_enabled("VEO_EXTENSION_OSS_UPLOAD_ENABLED", True):
+    if not _veo_env_enabled("VEO_EXTENSION_R2_UPLOAD_ENABLED", True):
         return {}
-    if _veo_payload_flag_is_false(p.get("veo_image_oss_upload", p.get("extension_oss_upload", True))):
+    if _veo_payload_flag_is_false(p.get("veo_image_r2_upload", p.get("extension_r2_upload", True))):
         return {}
 
     label = str(resolution_label or p.get("extension_image_resolution_label") or p.get("resolution") or p.get("image_resolution") or p.get("veo_image_resolution") or "").strip().lower()
-    # VEO ?????? 2K/4K ???? base64?1K ??? fifeUrl?
-    if label and label not in {"2k", "4k"}:
+    # AI Studio returns image data as a data URL for all resolutions. Upload
+    # 1K as well as 2K/4K so the public task result never contains a large
+    # base64 payload when R2 is configured.
+    if label and label not in {"1k", "2k", "4k"}:
         return {}
 
-    oss_cfg = oss_config_from_setting_section((app_config.get_raw_config() or {}).get("oss"))
-    if not oss_cfg.enabled:
+    r2_cfg = r2_config_from_setting_section((app_config.get_raw_config() or {}).get("r2"))
+    if not r2_cfg.enabled:
         return {}
 
-    ak = (oss_cfg.access_key_id or os.environ.get("OSS_ACCESS_KEY_ID") or "").strip()
-    sk = (oss_cfg.access_key_secret or os.environ.get("OSS_ACCESS_KEY_SECRET") or "").strip()
-    if not (oss_cfg.endpoint and oss_cfg.region and oss_cfg.bucket and ak and sk):
+    access_key_id = (r2_cfg.access_key_id or os.environ.get("R2_ACCESS_KEY_ID") or "").strip()
+    access_key_secret = (r2_cfg.access_key_secret or os.environ.get("R2_ACCESS_KEY_SECRET") or "").strip()
+    if not (r2_cfg.endpoint and r2_cfg.region and r2_cfg.bucket and access_key_id and access_key_secret):
         return {}
 
-    normalized = "4k" if label == "4k" else "2k"
+    normalized = label or "1k"
+    object_key_prefix = (
+        "veo_workflow/image/aistudio/1k"
+        if normalized == "1k"
+        else f"veo_workflow/image/upsample/{normalized}"
+    )
     return {
         "enabled": True,
-        "provider": "aliyun_oss",
-        "endpoint": oss_cfg.endpoint,
-        "region": oss_cfg.region,
-        "bucket": oss_cfg.bucket,
-        "public_base_url": oss_cfg.public_base_url,
-        "access_key_id": ak,
-        "access_key_secret": sk,
-        "object_key_prefix": f"veo_workflow/image/upsample/{normalized}",
+        "provider": "cloudflare_r2",
+        "endpoint": r2_cfg.endpoint,
+        "region": r2_cfg.region,
+        "bucket": r2_cfg.bucket,
+        "public_base_url": r2_cfg.public_base_url,
+        "access_key_id": access_key_id,
+        "access_key_secret": access_key_secret,
+        "object_key_prefix": object_key_prefix,
         "required": True,
     }
 
 
-async def _veo_extension_upload_upsample_data_url_to_oss(
+async def _veo_extension_upload_upsample_data_url_to_r2(
     result: Dict[str, Any],
     *,
     project_id: str,
     log_file: Path,
 ) -> Dict[str, Any]:
-    """插件模式：把插件返回的 2K/4K data:image/jpeg;base64 上传 OSS，并将结果 URL 回填。
+    """插件模式：把插件返回的 2K/4K data:image/jpeg;base64 上传 R2，并将结果 URL 回填。
 
-    非插件路径的 2K/4K 放大是在 Python 内直接拿到 base64 后上传 OSS；插件路径的 base64
+    非插件路径的 2K/4K 放大是在 Python 内直接拿到 base64 后上传 R2；插件路径的 base64
     由浏览器插件返回，这里对齐非插件行为，避免最终 API 返回大段 base64。
     """
     if not isinstance(result, dict):
@@ -1272,9 +1585,9 @@ async def _veo_extension_upload_upsample_data_url_to_oss(
     if not share.startswith(prefix) or ";base64," not in share:
         return result
 
-    oss_cfg = oss_config_from_setting_section((app_config.get_raw_config() or {}).get("oss"))
-    if not oss_cfg.enabled:
-        append_log(log_file, "[veo][extension][image] upsample data URL kept because OSS disabled")
+    r2_cfg = r2_config_from_setting_section((app_config.get_raw_config() or {}).get("r2"))
+    if not r2_cfg.enabled:
+        append_log(log_file, "[veo][extension][image] upsample data URL kept because R2 disabled")
         return result
 
     try:
@@ -1285,8 +1598,8 @@ async def _veo_extension_upload_upsample_data_url_to_oss(
         media_name = str(result.get("generated_media_id") or "").strip() or None
         object_key = build_veo_upsample_object_key(project_id=str(project_id), media_name=media_name)
         url = await asyncio.to_thread(
-            upload_bytes_to_oss,
-            cfg=oss_cfg,
+            upload_bytes_to_r2,
+            cfg=r2_cfg,
             data=raw,
             object_key=object_key,
             content_type="image/jpeg",
@@ -1295,13 +1608,13 @@ async def _veo_extension_upload_upsample_data_url_to_oss(
         out["share_url"] = url
         out["image_url"] = url
         out["upsample_url"] = url
-        out["upsample_oss_object_key"] = object_key
-        append_log(log_file, f"[veo][extension][image] uploaded upsample data URL to OSS object_key={object_key!r}")
+        out["upsample_r2_object_key"] = object_key
+        append_log(log_file, f"[veo][extension][image] uploaded upsample data URL to R2 object_key={object_key!r}")
         return out
     except Exception as e:
         out = dict(result)
-        out["upsample_error"] = str(out.get("upsample_error") or f"OSS上传失败：{_short_err_msg(e, max_len=200)}")
-        append_log(log_file, f"[veo][extension][image] upload upsample data URL to OSS failed, keep data URL: {e}")
+        out["upsample_error"] = str(out.get("upsample_error") or f"R2 上传失败：{_short_err_msg(e, max_len=200)}")
+        append_log(log_file, f"[veo][extension][image] upload upsample data URL to R2 failed, keep data URL: {e}")
         return out
 
 
@@ -1409,6 +1722,13 @@ async def _veo_external_upscale_2k_to_4k(
 
 
 def _veo_video_watermark_remove_enabled(payload: Dict[str, Any]) -> bool:
+    # 去水印依赖外部服务 onnx_watermark_service，默认关闭（见 config/setting.toml
+    # 的 [video_postprocess]）。总开关关闭或未配置服务地址时，payload 里的
+    # remove_watermark 也不能反向打开，避免未部署该服务时产生无谓的外部请求。
+    if not app_config.video_remove_watermark_enabled:
+        return False
+    if not app_config.video_postprocess_service_base_url:
+        return False
     p = payload or {}
     for key in (
         "remove_watermark",
@@ -1484,6 +1804,55 @@ async def _veo_remove_result_video_watermark(
 ) -> Dict[str, Any]:
     if not _veo_video_watermark_remove_enabled(payload):
         return result
+    if bool(getattr(app_config, "skip_video_watermark_remove", False)):
+        append_log(log_file, "[veo][video-wm] skipped by admin switch; keep original video")
+        if not isinstance(result, dict):
+            return result
+        out = dict(result)
+        out["watermark_removed"] = False
+        out["watermark_remove_skipped"] = True
+        out["watermark_remove_error"] = "skipped by admin switch"
+        return out
+
+    total_timeout = _veo_float_env(
+        "VEO_REMOVE_VIDEO_WATERMARK_TOTAL_TIMEOUT_SECONDS",
+        120.0,
+        min_value=1.0,
+        max_value=7200.0,
+    )
+    try:
+        return await asyncio.wait_for(
+            _veo_remove_result_video_watermark_impl(
+                result,
+                payload=payload,
+                project_id=project_id,
+                model_key=model_key,
+                progress_cb=progress_cb,
+                log_file=log_file,
+            ),
+            timeout=total_timeout,
+        )
+    except asyncio.TimeoutError:
+        append_log(log_file, f"[veo][video-wm] remove timed out after {total_timeout:.1f}s; keep original video")
+        if not isinstance(result, dict):
+            return result
+        out = dict(result)
+        out["watermark_removed"] = False
+        out["watermark_remove_error"] = f"watermark remove timed out after {total_timeout:.1f}s"
+        return out
+
+
+async def _veo_remove_result_video_watermark_impl(
+    result: Dict[str, Any],
+    *,
+    payload: Dict[str, Any],
+    project_id: str,
+    model_key: str = "",
+    progress_cb: ProgressCB,
+    log_file: Path,
+) -> Dict[str, Any]:
+    if not _veo_video_watermark_remove_enabled(payload):
+        return result
     if not isinstance(result, dict):
         return result
     source_url = _veo_pick_result_video_url(result)
@@ -1495,7 +1864,7 @@ async def _veo_remove_result_video_watermark(
     service_url = str(
         payload.get("video_watermark_service_url")
         or os.environ.get("VEO_REMOVE_VIDEO_WATERMARK_SERVICE_URL")
-        or "http://192.168.1.14:8791/process-video"
+        or f"{app_config.video_postprocess_service_base_url}/process-video"
     ).strip()
     process_timeout = _veo_float_env(
         "VEO_REMOVE_VIDEO_WATERMARK_PROCESS_TIMEOUT_SECONDS",
@@ -1503,12 +1872,18 @@ async def _veo_remove_result_video_watermark(
         min_value=30.0,
         max_value=7200.0,
     )
+    total_timeout = _veo_float_env(
+        "VEO_REMOVE_VIDEO_WATERMARK_TOTAL_TIMEOUT_SECONDS",
+        120.0,
+        min_value=1.0,
+        max_value=7200.0,
+    )
     append_log(
         log_file,
         "[veo][video-wm] start "
         f"source={safe_trim(source_url, 260)!r} "
         f"download={safe_trim(download_url, 260)!r} "
-        f"service={safe_trim(service_url, 260)!r} process_timeout={process_timeout}s",
+        f"service={safe_trim(service_url, 260)!r} process_timeout={process_timeout}s total_timeout={total_timeout}s",
     )
     try:
         await progress_cb(98, {"stage": "remove_video_watermark_remote_start", "video_url": download_url, "service_url": service_url})
@@ -1590,7 +1965,20 @@ _VEO_CONTENT_VIOLATION_REASON_MESSAGES = {
     "PUBLIC_ERROR_SEXUAL": "上传参考图失败，参考图包含性相关违规内容[PUBLIC_ERROR_SEXUAL]",
     "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED": "上传参考图失败，参考图中包含公众人物/知名人物[PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED]",
     "VEO_REFERENCE_VIDEO_DURATION_VIOLATION": "参考视频时长不能超过30秒",
+    # AI Studio（NARWHAL / nana-banana 图片模型）拒绝按提示词生成图片时返回：
+    # "The model could not generate the image based on the prompt provided.
+    #  You will not be charged for this request. Try rephrasing the prompt."
+    # 该类属于模型主动拒绝、且明确“不计费”，应作为不惩罚的内容违规处理。
+    "AI_STUDIO_IMAGE_GENERATION_REFUSED": "图片生成失败，模型无法根据当前提示词生成图片（未产生扣费），请调整或重述提示词后重试。",
 }
+
+
+# AI Studio 图片生成被模型拒绝时错误文本中出现的稳定特征串（大写匹配）。
+_VEO_AI_STUDIO_IMAGE_REFUSAL_MARKERS = (
+    "THE MODEL COULD NOT GENERATE THE IMAGE BASED ON THE PROMPT",
+    "AI STUDIO 4K IMAGE GENERATION RETURNED NO IMAGE",
+    "UNABLE TO SHOW THE GENERATED IMAGE",
+)
 
 
 _VEO_RUNTIME_GENERATION_FAILURE_MARKERS = (
@@ -1620,6 +2008,10 @@ def _veo_content_violation_reason(err: Any) -> Optional[str]:
     for reason in _VEO_CONTENT_VIOLATION_REASON_MESSAGES:
         if reason in haystack:
             return reason
+    # AI Studio 图片模型主动拒绝生成（且明确不计费）：错误文本不含上述 reason 关键字，
+    # 但包含稳定的拒绝特征串，单独识别并归为不惩罚的内容违规。
+    if any(marker in haystack for marker in _VEO_AI_STUDIO_IMAGE_REFUSAL_MARKERS):
+        return "AI_STUDIO_IMAGE_GENERATION_REFUSED"
     return None
 
 
@@ -4287,6 +4679,13 @@ def _veo_collect_ingredients_video_urls(payload: Dict[str, Any]) -> List[str]:
     video_url = str(payload.get("video_url") or "").strip()
     if not video_url:
         return []
+    parsed = urlparse(video_url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise NonPenalizedTaskError(
+            "payload.video_url 仅支持以 http:// 或 https:// 开头的视频地址",
+            status_code=400,
+            content_violation=True,
+        )
     return [video_url]
 
 
@@ -4494,13 +4893,13 @@ def _veo_resolve_extension_video_model_and_aspect(
 def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
     """将 userPaygateTier 转为可读套餐名（与 flow2api manage.html formatAccountType 一致）。"""
     t = str(tier or "").strip()
-    if not t or t == "PAYGATE_TIER_NOT_PAID":
+    if not t or t in ("0", "PAYGATE_TIER_NOT_PAID"):
         # free账号
         return "0" 
-    if t == "PAYGATE_TIER_ONE":
+    if t in ("1", "PAYGATE_TIER_ONE"):
         # pro账号
         return "1"
-    if t == "PAYGATE_TIER_TWO":
+    if t in ("2", "PAYGATE_TIER_TWO"):
         # ultra账号
         return "2"
     return "-1" #其它类型
@@ -5638,7 +6037,7 @@ async def veo_workflow(
         ext_exp = str(access_expires or "").strip() or None
         ext_tok_info: Optional[Dict[str, Any]] = None
         _ext_window_balance: Optional[int] = None
-        if db is not None and task_type_window_id:
+        if not image_mode and db is not None and task_type_window_id:
             try:
                 mid = int(task_type_window_id)
                 if mid > 0:
@@ -5670,7 +6069,7 @@ async def veo_workflow(
                     f"浏览器插件未连接： window_key={window_key!r}",
                     status_code=503,
                 )
-            if not _veo_cached_access_still_valid(access_token, access_expires, margin_seconds=10):
+            if not image_mode and not _veo_cached_access_still_valid(access_token, access_expires, margin_seconds=10):
                 ext_tok_info = await veo_fetch_access_tokens_via_extension(
                     sess=sess,
                     target_url=project_page,
@@ -5690,7 +6089,14 @@ async def veo_workflow(
                 ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
                 ext_at = str((ext_tok_info or {}).get("short_access_token") or "").strip() or ext_at
                 if not _veo_cached_access_still_valid(ext_at, ext_exp, margin_seconds=10):
-                    if db is not None and task_type_window_id:
+                    # Video generation is now executed by the Flow browser
+                    # console scripts and does not require the legacy short
+                    # access token. Do not automatically disable the task
+                    # window when that legacy token is absent/expired; doing
+                    # so incorrectly turns off every VEO mapping after a
+                    # successful or failed generation. Explicit callers may
+                    # opt back into the old behavior for diagnostics.
+                    if bool(payload.get("disable_window_on_logout", False)) and db is not None and task_type_window_id:
                         try:
                             mid = int(task_type_window_id)
                             if mid > 0:
@@ -5703,49 +6109,10 @@ async def veo_workflow(
             append_log(log_file, f"[veo][extension] fetch long/short access_token via extension failed: {e}")
             if isinstance(e, NonPenalizedTaskError):
                 raise
+            if image_mode:
+                raise
             ext_session_token = None
             ext_at = None
-        if not ext_session_token:
-            async def _refresh_missing_session_token_in_background() -> None:
-                try:
-                    append_log(log_file, "[veo][extension] missing session_token; trigger background extension token fetch once")
-                    await veo_fetch_access_tokens_via_extension(
-                        sess=sess,
-                        target_url=project_page,
-                        space_id=space_id,
-                        window_key=window_key,
-                        connect_wait_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
-                        token_timeout_seconds=float(payload.get("extension_token_timeout_seconds") or 45.0),
-                        log_file=log_file,
-                        access_token=ext_session_token,
-                        access_expires=ext_exp,
-                        session_token=ext_session_token,
-                        short_access_token=ext_at,
-                        short_expires=ext_exp,
-                        force_fetch=True,
-                    )
-                except Exception as retry_e:
-                    append_log(log_file, f"[veo][extension] background fetch session_token via extension failed: {retry_e}")
-
-            asyncio.create_task(_refresh_missing_session_token_in_background())
-            raise NonPenalizedTaskError(
-                "missing usable session_token: please ensure the fingerprint window is logged in",
-                status_code=401,
-            )
-        if not ext_at:
-            raise NonPenalizedTaskError("missing usable short access_token: extension auth/session did not return access_token", status_code=401)
-        if db is not None and task_type_window_id:
-            try:
-                mid = int(task_type_window_id)
-                if mid > 0:
-                    await db.update_task_type_window(
-                        mapping_id=mid,
-                        sora_access_token=ext_session_token,
-                        sora_access_expires=ext_exp or None,
-                    )
-                    append_log(log_file, f"[veo][extension] persisted Labs session_token from extension to task_type_window id={mid}")
-            except Exception as e:
-                append_log(log_file, f"[veo][extension] persist access_token to DB failed (non-fatal): {e}")
         if image_mode:
             _ext_image_aspect = _veo_resolve_image_aspect_ratio(payload)
             _ext_image_model = _veo_resolve_image_model_name(payload)
@@ -5779,6 +6146,29 @@ async def veo_workflow(
         _original_i2v_urls = list(i2v_urls)
         if r2v_from_i2v_urls:
             _original_i2v_urls = list(r2v_from_i2v_urls)
+        _masked_face_reference_count = 0
+        _face_mosaic_enabled = app_config.veo_face_mosaic_enabled
+        # Mask every image reference before localization/upload, including image
+        # generation references and video-generation first/last frames.
+        async def _mask_image_refs(urls: List[str], kind: str) -> List[str]:
+            nonlocal _masked_face_reference_count
+            results = await _veo_mosaic_reference_media_batch(
+                urls,
+                payload=payload,
+                progress_cb=progress_cb,
+                log_file=log_file,
+                kind=kind,
+            )
+            _masked_face_reference_count += sum(faces for _, faces in results)
+            return [masked_url for masked_url, _ in results]
+
+        if _face_mosaic_enabled and (ingredients_urls or i2v_urls):
+            _ingredients_count = len(ingredients_urls)
+            _masked_image_refs = await _mask_image_refs([*ingredients_urls, *i2v_urls], "image")
+            ingredients_urls = _masked_image_refs[:_ingredients_count]
+            i2v_urls = _masked_image_refs[_ingredients_count:]
+        elif not _face_mosaic_enabled and (ingredients_urls or i2v_urls or ingredients_video_urls):
+            append_log(log_file, "[veo][reference-mosaic] skipped by config")
         if _veo_extension_local_image_cache_enabled(payload):
             # 输入图不要让指纹浏览器通过海外代理直连原图；Python 服务端先直连下载并
             # 暴露为 http://<base_url>/assets/veo_image_cache/...，插件再读取这个
@@ -5807,20 +6197,26 @@ async def veo_workflow(
                     progress_cb=progress_cb,
                     log_file=log_file,
                 )
-            if ingredients_video_urls:
-                ingredients_video_urls = [
-                    await _veo_materialize_video_for_extension(
-                        ingredients_video_urls[0],
-                        kind="ingredients_video",
-                        progress_cb=progress_cb,
-                        log_file=log_file,
-                    )
-                ]
-        if ingredients_video_urls and not _veo_is_local_asset_url(str(ingredients_video_urls[0] or "")):
-            # 视频参考强制本地化：指纹浏览器通过插件分片上传本机白名单地址。
+        if ingredients_video_urls:
+            # The watermark service downloads remote HTTP(S) inputs itself. Do not
+            # localize the original first, otherwise the same source is downloaded
+            # once here and once again by the masking service.
+            source_video_url = str(ingredients_video_urls[0] or "").strip()
+            video_url_for_extension = source_video_url
+            if _face_mosaic_enabled:
+                video_url_for_extension, _video_faces = await _veo_mosaic_reference_media(
+                    source_video_url,
+                    payload=payload,
+                    progress_cb=progress_cb,
+                    log_file=log_file,
+                    kind="video",
+                )
+                _masked_face_reference_count += _video_faces
+            # The extension must receive a local allow-listed URL. This is the only
+            # download of the masked result; the original remote input was not cached.
             ingredients_video_urls = [
                 await _veo_materialize_video_for_extension(
-                    ingredients_video_urls[0],
+                    video_url_for_extension,
                     kind="ingredients_video",
                     progress_cb=progress_cb,
                     log_file=log_file,
@@ -5856,6 +6252,8 @@ async def veo_workflow(
                         f"end_frame_index={_ext_video_reference_meta.get('end_frame_index')}",
                     )
         ext_payload = dict(payload)
+        if not image_mode and _masked_face_reference_count > 0:
+            ext_payload["prompt"] = f"{prompt}\n注意：生成视频中的人物脸部不允许有马赛克，必须还原自然人物面部。"
 
         if image_mode:
             if _ext_want_external_4k:
@@ -5887,6 +6285,7 @@ async def veo_workflow(
             if _ext_video_reference_meta.get("end_frame_index") is not None:
                 ext_payload.setdefault("ingredients_video_end_frame_index", _ext_video_reference_meta.get("end_frame_index"))
                 ext_payload.setdefault("video_reference_end_frame_index", _ext_video_reference_meta.get("end_frame_index"))
+        print(f"_ext_image_aspect:{_ext_image_aspect}");
         ext_payload.update(
             {
                 "workflow_kind": "image" if image_mode else "video",
@@ -5922,10 +6321,10 @@ async def veo_workflow(
                 "extension_image_upsample_target_resolution": _ext_upsample_target_resolution,
             }
         )
-        _ext_oss_upload = _veo_extension_oss_upload_config(ext_payload, resolution_label=_ext_resolution_label) if image_mode and _ext_want_upsample else {}
-        if _ext_oss_upload:
-            ext_payload["oss_upload"] = _ext_oss_upload
-            ext_payload["extension_oss_upload"] = _ext_oss_upload
+        _ext_r2_upload = _veo_extension_r2_upload_config(ext_payload, resolution_label=_ext_resolution_label) if image_mode else {}
+        if _ext_r2_upload:
+            ext_payload["r2_upload"] = _ext_r2_upload
+            ext_payload["extension_r2_upload"] = _ext_r2_upload
         append_log(log_file, f"[veo][extension] dispatch workflow {_mode} project_id={project_id!r} model={_ext_model_key!r} ratio={_ext_video_aspect!r}")
         # 如插件在 token 获取后意外断开，仍走统一的“中转页 fpb_* URL 触发 WS”接口；
         # Python 只短暂连接 CDP 打开中转页，随后立刻断开；目标页由插件延迟跳转打开。
@@ -6024,6 +6423,18 @@ async def veo_workflow(
                 progress_cb=progress_cb,
                 log_file=log_file,
             )
+        if isinstance(_ext_result, dict) and not image_mode:
+            """
+            _ext_result = await _veo_remove_result_video_watermark(
+                _ext_result,
+                payload=payload,
+                project_id=project_id,
+                model_key=_ext_model_key or "",
+                progress_cb=progress_cb,
+                log_file=log_file,
+            )
+            """
+        _ext_result = _veo_rewrite_flow_content_urls(_ext_result)
         return _ext_result, project_page
 
     raise NonPenalizedTaskError(

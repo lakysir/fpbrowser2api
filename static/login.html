@@ -98,12 +98,13 @@
           }
           setAdminToken(d.token);
           const me = await getAdminProfile(true);
-          const order = ["system", "projects", "task_types", "tasks", "test", "image_resources", "totp", "logs", "users"];
+          const order = ["system", "projects", "task_types", "tasks", "watermark_tasks", "test", "image_resources", "totp", "logs", "users"];
           const pathMap = {
             system: "/admin/system",
             projects: "/admin/projects",
             task_types: "/admin/task-types",
             tasks: "/admin/tasks",
+            watermark_tasks: "/admin/watermark-tasks",
             test: "/admin/test",
             image_resources: "/admin/image-resources",
             totp: "/admin/totp",

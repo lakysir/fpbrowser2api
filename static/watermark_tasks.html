@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>去水印任务 - Mirr矩阵</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="/assets/admin-nav.css" rel="stylesheet" />
+    <link href="/assets/admin-theme.css" rel="stylesheet" />
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .small2 { font-size: 12px; }
+      .url-cell { min-width: 0; max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .meta-cell { max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .progress-cell { width: 120px; }
+      .status-table { min-width: 760px; }
+      .capability-list { display: flex; flex-wrap: wrap; gap: 4px; }
+      .status-summary { min-height: 24px; }
+      .collapse-toggle { width: 32px; height: 30px; padding: 0; }
+      .collapse-toggle::before { content: ""; display: inline-block; width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg) translate(-1px, -1px); transition: transform .15s ease-in-out; }
+      .collapse-toggle[aria-expanded="true"]::before { transform: rotate(225deg) translate(-1px, -1px); }
+      .billing-table { min-width: 1050px; }
+      .health-list { display: flex; flex-wrap: wrap; gap: 6px; }
+      .health-item { cursor: default; }
+      .output-cell { width: 220px; max-width: 220px; }
+      .media-preview-stage { min-height: 240px; max-height: calc(100vh - 210px); background: #111; }
+      .media-preview-stage img,
+      .media-preview-stage video { display: block; max-width: 100%; max-height: calc(100vh - 210px); object-fit: contain; }
+    </style>
+  </head>
+  <body class="bg-light">
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+    <nav class="navbar navbar-dark bg-dark admin-top-nav">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/admin/system">Mirr矩阵</a>
+        <div class="navbar-nav me-auto">
+          <a class="nav-link" data-nav="system" href="/admin/system">系统配置</a>
+          <a class="nav-link" data-nav="projects" href="/admin/projects">项目管理</a>
+          <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
+          <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
+          <a class="nav-link" data-nav="watermark_tasks" href="/admin/watermark-tasks">去水印任务</a>
+          <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
+          <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
+          <a class="nav-link" data-nav="totp" href="/admin/totp">2FA生成</a>
+          <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
+          <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
+        </div>
+        <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
+        <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
+      </div>
+    </nav>
+
+    <div class="container-fluid py-4">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <div class="d-flex flex-wrap align-items-center gap-3">
+            <div>
+              <h5 class="mb-1">去水印任务</h5>
+              <div class="text-muted small">任务服务器：</div>
+              <div class="health-list" id="taskHealthList"><span class="badge text-bg-secondary">检测中</span></div>
+              <div class="text-muted small d-flex align-items-center gap-2">
+                <span>SD余额：<span class="mono fw-semibold" id="sdBalance">-</span></span>
+                <button type="button" class="btn btn-link btn-sm p-0 small" id="btnBillingDetails">消费明细</button>
+              </div>
+            </div>
+            <div class="ms-auto d-flex flex-wrap gap-2 align-items-end">
+              <div class="form-check form-switch mb-1">
+                <input class="form-check-input" type="checkbox" role="switch" id="skipWatermarkSwitch" />
+                <label class="form-check-label" for="skipWatermarkSwitch">跳过去水印请求</label>
+                <div class="text-muted small" id="skipWatermarkHint">-</div>
+              </div>
+              <div class="form-check form-switch mb-1">
+                <input class="form-check-input" type="checkbox" role="switch" id="hideFaceMaskSwitch" />
+                <label class="form-check-label" for="hideFaceMaskSwitch">隐藏人脸网格</label>
+              </div>
+              <div>
+                <label class="form-label small mb-1">任务服务器</label>
+                <select class="form-select form-select-sm" id="fltSource">
+                  <option value="">全部服务器</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label small mb-1">任务类型</label>
+                <select class="form-select form-select-sm" id="fltTaskType">
+                  <option value="">全部</option>
+                  <option value="video-ultra-720p">SD2.0 720</option>
+                  <option value="video-ultra-720p-fast">SD2.0 720 fast</option>
+                  <option value="video-ultra-720p-mini">SD2.0 720 Mini</option>
+                  <option value="sd2.5-720p-official">SD2.5 720</option>
+                  <option value="sd2.5-1080p-official">SD2.5 1080</option>
+                  <option value="video_upscale">1080p upscale</option>
+                  <option value="newtoken_x_img">ComfyUI image</option>
+                  <option value="newtoken_x_video">ComfyUI LTX video</option>
+                  <option value="comfy_video_upscale_480">ComfyUI 480p upscale</option>
+                  <option value="watermark_cleanup">去水印</option>
+                  <option value="face_mask">人脸网格</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label small mb-1">状态</label>
+                <select class="form-select form-select-sm" id="fltStatus">
+                  <option value="">全部</option>
+                  <option value="queued">queued</option>
+                  <option value="running">running</option>
+                  <option value="completed">completed</option>
+                  <option value="failed">failed</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label small mb-1">每页</label>
+                <select class="form-select form-select-sm" id="fltLimit">
+                  <option value="20">20</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                  <option value="200">200</option>
+                </select>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm" id="btnRefresh">刷新</button>
+            </div>
+          </div>
+          <div class="d-flex flex-wrap gap-3 mt-3 small">
+            <span>排队中：<span class="fw-semibold text-secondary mono" id="statQueued">0</span></span>
+            <span>运行中：<span class="fw-semibold text-primary mono" id="statRunning">0</span></span>
+            <span>已完成：<span class="fw-semibold text-success mono" id="statCompleted">0</span></span>
+            <span>失败：<span class="fw-semibold text-danger mono" id="statFailed">0</span></span>
+            <span class="ms-auto text-muted" id="pageInfo">共 0 条</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm mb-3">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+          <span class="fw-semibold">ComfyUI 工作流状态</span>
+          <span class="badge text-bg-secondary" id="comfyOnlineSummary">加载中</span>
+          <span class="ms-auto text-muted small mono" id="comfyUpdatedAt">-</span>
+          <button class="btn btn-outline-secondary btn-sm collapse-toggle" id="btnToggleComfy" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#comfyStatusBody" aria-expanded="false"
+                  aria-controls="comfyStatusBody" aria-label="展开 ComfyUI 工作流状态" title="展开 ComfyUI 工作流状态"></button>
+        </div>
+        <div class="card-body collapse" id="comfyStatusBody">
+          <div class="d-flex flex-wrap gap-3 small status-summary mb-3">
+            <span>排队：<span class="fw-semibold text-secondary mono" id="comfyQueued">0</span></span>
+            <span>运行：<span class="fw-semibold text-primary mono" id="comfyRunning">0</span></span>
+            <span>完成：<span class="fw-semibold text-success mono" id="comfyCompleted">0</span></span>
+            <span>失败：<span class="fw-semibold text-danger mono" id="comfyFailed">0</span></span>
+            <span>取消：<span class="fw-semibold text-warning mono" id="comfyCancelled">0</span></span>
+            <span>并发：<span class="fw-semibold mono" id="comfyCapacity">0 / 0</span></span>
+          </div>
+          <div class="row g-4">
+            <div class="col-12 col-xl-6">
+              <h6 class="mb-2">服务器</h6>
+              <div class="table-responsive">
+                <table class="table table-sm align-middle status-table mb-0">
+                  <thead><tr class="small2"><th>服务器</th><th>连接</th><th>Worker</th><th>显存</th><th>能力</th><th>当前任务</th></tr></thead>
+                  <tbody id="comfyServerBody"><tr><td colspan="6" class="text-center text-muted py-3">加载中</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="col-12 col-xl-6">
+              <h6 class="mb-2">工作流</h6>
+              <div class="table-responsive">
+                <table class="table table-sm align-middle status-table mb-0">
+                  <thead><tr class="small2"><th>Model / 文件</th><th>状态</th><th>排队</th><th>运行</th><th>完成</th><th>失败</th><th>取消</th><th>可用服务器</th></tr></thead>
+                  <tbody id="comfyWorkflowBody"><tr><td colspan="8" class="text-center text-muted py-3">加载中</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-sm align-middle" style="min-width: 1440px;">
+              <thead>
+                <tr class="small2">
+                  <th style="width: 210px;">task_id</th>
+                  <th style="width: 145px;">任务服务器</th>
+                  <th style="width: 160px;">任务类型</th>
+                  <th style="width: 110px;">状态</th>
+                  <th style="width: 130px;">阶段</th>
+                  <th style="width: 140px;">进度</th>
+                  <th style="width: 170px;">ComfyUI Server</th>
+                  <th style="width: 220px;">输出</th>
+                  <th style="width: 160px;">错误</th>
+                  <th style="width: 150px;">创建时间</th>
+                  <th style="width: 150px;">开始时间</th>
+                  <th style="width: 150px;">完成时间</th>
+                  <th style="width: 90px;">时长</th>
+                  <th style="width: 100px;">参数</th>
+                  <th style="width: 120px;">上游参数</th>
+                  <th style="width: 80px;">详情</th>
+                  <th style="width: 90px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="d-flex align-items-center justify-content-between border-top pt-3 mt-2">
+            <span class="text-muted small" id="pageInfoBottom">共 0 条</span>
+            <div class="btn-group btn-group-sm">
+              <button class="btn btn-outline-secondary" id="btnPrev">上一页</button>
+              <button class="btn btn-outline-secondary" id="btnNext">下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="billingModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">SD 消费明细</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex flex-wrap align-items-end gap-2 mb-3">
+              <div>
+                <label class="form-label small mb-1" for="billingStartDate">开始日期</label>
+                <input class="form-control form-control-sm" type="date" id="billingStartDate" />
+              </div>
+              <div>
+                <label class="form-label small mb-1" for="billingEndDate">结束日期</label>
+                <input class="form-control form-control-sm" type="date" id="billingEndDate" />
+              </div>
+              <div>
+                <label class="form-label small mb-1" for="billingPageSize">每页</label>
+                <select class="form-select form-select-sm" id="billingPageSize">
+                  <option value="20">20</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <button class="btn btn-primary btn-sm" type="button" id="btnBillingQuery">查询</button>
+              <span class="ms-auto text-muted small" id="billingSummary">-</span>
+            </div>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle billing-table mb-0">
+                <thead>
+                  <tr class="small2">
+                    <th>时间</th><th>上游任务 ID</th><th>模型</th><th>状态</th>
+                    <th class="text-end">扣费</th><th class="text-end">Tokens</th>
+                    <th class="text-end">单价</th><th>已扣除</th>
+                  </tr>
+                </thead>
+                <tbody id="billingBody"><tr><td colspan="8" class="text-center text-muted py-4">请选择查询条件</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="modal-footer justify-content-between">
+            <span class="text-muted small" id="billingPageInfo">第 1 页</span>
+            <div class="btn-group btn-group-sm">
+              <button type="button" class="btn btn-outline-secondary" id="btnBillingPrev">上一页</button>
+              <button type="button" class="btn btn-outline-secondary" id="btnBillingNext">下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="detailModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="detailTitle">任务详情</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <pre class="mono small2 mb-0" id="detailBody" style="white-space: pre-wrap; word-break: break-word;"></pre>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="previewModal" tabindex="-1" aria-labelledby="previewTitle" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="previewTitle">输出预览</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+          </div>
+          <div class="modal-body p-0">
+            <div class="media-preview-stage d-flex align-items-center justify-content-center" id="previewStage"></div>
+          </div>
+          <div class="modal-footer justify-content-between gap-2">
+            <a class="mono small text-truncate me-auto" id="previewUrl" href="#" target="_blank" rel="noopener noreferrer"></a>
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module">
+      import { adminFetch, toast, setActiveNav, logout, escapeHtml, initAdminPage } from "/assets/app.js";
+
+      initAdminPage("watermark_tasks");
+      setActiveNav("watermark_tasks");
+      document.getElementById("btnLogout").addEventListener("click", logout);
+
+      let limit = 50;
+      let offset = 0;
+      let total = 0;
+      let lastItems = [];
+      let savingSettings = false;
+      let billingPage = 1;
+      let billingTotal = 0;
+      let billingLoaded = false;
+
+      const comfyCollapseKey = "watermarkTasks.comfyStatusExpanded";
+      const hideFaceMaskKey = "watermarkTasks.hideFaceMask";
+      const comfyStatusBody = document.getElementById("comfyStatusBody");
+      const comfyToggle = document.getElementById("btnToggleComfy");
+      const hideFaceMaskSwitch = document.getElementById("hideFaceMaskSwitch");
+      try {
+        hideFaceMaskSwitch.checked = localStorage.getItem(hideFaceMaskKey) !== "false";
+      } catch {
+        hideFaceMaskSwitch.checked = true;
+      }
+      try {
+        if (localStorage.getItem(comfyCollapseKey) === "true") {
+          comfyStatusBody.classList.add("show");
+          comfyToggle.setAttribute("aria-expanded", "true");
+        }
+      } catch {}
+
+      function updateComfyToggle(expanded) {
+        comfyToggle.setAttribute("aria-expanded", String(expanded));
+        const action = expanded ? "收起" : "展开";
+        comfyToggle.setAttribute("aria-label", `${action} ComfyUI 工作流状态`);
+        comfyToggle.setAttribute("title", `${action} ComfyUI 工作流状态`);
+        try { localStorage.setItem(comfyCollapseKey, String(expanded)); } catch {}
+      }
+
+      comfyStatusBody.addEventListener("shown.bs.collapse", () => updateComfyToggle(true));
+      comfyStatusBody.addEventListener("hidden.bs.collapse", () => updateComfyToggle(false));
+
+      function statusBadge(status) {
+        const s = String(status || "");
+        const cls = ["completed", "succeeded"].includes(s) ? "success" : s === "failed" ? "danger" : s === "running" ? "primary" : s === "cancelled" ? "warning" : "secondary";
+        return `<span class="badge text-bg-${cls}">${escapeHtml(s || "-")}</span>`;
+      }
+
+      function taskTypeBadge(taskType) {
+        const labels = {
+          "video-ultra-720p": "sd2.0 720",
+          "video-ultra-720p-fast": "sd2.0 720 fast",
+          "video-ultra-720p-mini": "sd2.0 720 mini",
+          "sd2.5-720p-official": "sd2.5 720",
+          video_ultra_720p: "视频生成（历史）",
+          video_upscale: "1080p upscale",
+          newtoken_x_img: "ComfyUI image",
+          newtoken_x_video: "ComfyUI LTX video",
+          comfy_video_upscale_480: "ComfyUI 480p upscale",
+          watermark_cleanup: "去水印",
+          face_mask: "人脸网格",
+        };
+        const value = String(taskType || "");
+        return `<span class="badge text-bg-light border" title="${escapeHtml(value)}">${escapeHtml(labels[value] || value || "-")}</span>`;
+      }
+
+      function formatTime(value) {
+        if (value == null || value === "") return "-";
+        const date = parseTime(value);
+        return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+      }
+
+      function parseTime(value) {
+        if (value == null || value === "") return new Date(NaN);
+        const numeric = Number(value);
+        return Number.isFinite(numeric)
+          ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
+          : new Date(value);
+      }
+
+      function formatDuration(createdAt, finishedAt) {
+        if (finishedAt == null || finishedAt === "") return "";
+        const created = parseTime(createdAt);
+        const finished = parseTime(finishedAt);
+        if (Number.isNaN(created.getTime()) || Number.isNaN(finished.getTime())) return "";
+        return `${Math.max(0, Math.round((finished.getTime() - created.getTime()) / 1000))}s`;
+      }
+
+      function resultOutput(item) {
+        const result = item?.result && typeof item.result === "object" ? item.result : {};
+        return item.output_url || result.output_url || result.video_url || result.watermark_removed_url || "";
+      }
+
+      function errorMessage(item) {
+        const resultError = item?.result?.error;
+        return String(item.error_message || (typeof resultError === "object" ? resultError?.message : resultError) || "");
+      }
+
+      function progressHtml(value) {
+        const progress = Math.max(0, Math.min(100, Number(value) || 0));
+        return `<div class="progress progress-cell" role="progressbar" aria-label="任务进度" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100" style="height: 18px;">
+          <div class="progress-bar" style="width: ${progress}%">${progress}%</div>
+        </div>`;
+      }
+
+      function formatBytes(value) {
+        let bytes = Number(value);
+        if (!Number.isFinite(bytes) || bytes < 0) return "-";
+        const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        let index = 0;
+        while (bytes >= 1024 && index < units.length - 1) {
+          bytes /= 1024;
+          index += 1;
+        }
+        return `${bytes.toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
+      }
+
+      function badgeList(values) {
+        const items = Array.isArray(values) ? values : [];
+        if (!items.length) return `<span class="text-muted">-</span>`;
+        return `<span class="capability-list">${items.map((value) => `<span class="badge text-bg-light border mono">${escapeHtml(value)}</span>`).join("")}</span>`;
+      }
+
+      function renderComfyStatus(data) {
+        const queue = data?.queue || {};
+        const servers = Array.isArray(data?.servers) ? data.servers : [];
+        const workflows = Array.isArray(data?.workflows) ? data.workflows : [];
+        document.getElementById("comfyQueued").textContent = String(queue.queued || 0);
+        document.getElementById("comfyRunning").textContent = String(queue.running || 0);
+        document.getElementById("comfyCompleted").textContent = String(queue.completed || 0);
+        document.getElementById("comfyFailed").textContent = String(queue.failed || 0);
+        document.getElementById("comfyCancelled").textContent = String(queue.cancelled || 0);
+        document.getElementById("comfyCapacity").textContent = `${queue.active_runners || 0} / ${queue.max_running || 0}`;
+        const online = servers.filter((server) => server.online).length;
+        const onlineEl = document.getElementById("comfyOnlineSummary");
+        onlineEl.textContent = `在线 ${online} / ${servers.length}`;
+        onlineEl.className = `badge ${online === servers.length && servers.length ? "text-bg-success" : online ? "text-bg-warning" : "text-bg-danger"}`;
+        document.getElementById("comfyUpdatedAt").textContent = new Date().toLocaleString("zh-CN", { hour12: false });
+
+        document.getElementById("comfyServerBody").innerHTML = servers.length ? servers.map((server) => {
+          const device = Array.isArray(server.devices) ? server.devices[0] : null;
+          const free = device?.torch_vram_free ?? device?.vram_free;
+          const totalVram = device?.torch_vram_total ?? device?.vram_total;
+          const memory = device ? `${formatBytes(free)} / ${formatBytes(totalVram)}` : "-";
+          const connection = server.online
+            ? `<span class="badge text-bg-success">online</span>`
+            : `<span class="badge text-bg-danger" title="${escapeHtml(server.error || "")}">offline</span>`;
+          const worker = server.worker_status === "busy"
+            ? `<span class="badge text-bg-primary">busy</span>`
+            : `<span class="badge text-bg-secondary">idle</span>`;
+          return `<tr>
+            <td><div class="fw-semibold">${escapeHtml(server.name || "-")}</div><div class="mono small2 text-muted">${escapeHtml(server.url || "")}</div></td>
+            <td>${connection}</td><td>${worker}</td><td class="mono small2">${escapeHtml(memory)}</td>
+            <td>${badgeList(server.capabilities)}</td>
+            <td class="mono small2">${escapeHtml(server.current_task_id || "-")}</td>
+          </tr>`;
+        }).join("") : `<tr><td colspan="6" class="text-center text-muted py-3">暂无服务器</td></tr>`;
+
+        document.getElementById("comfyWorkflowBody").innerHTML = workflows.length ? workflows.map((workflow) => `<tr>
+          <td><div class="mono small fw-semibold">${escapeHtml(workflow.model || "-")}</div><div class="small2 text-muted">${escapeHtml(workflow.workflow_file || "")}</div></td>
+          <td>${statusBadge(workflow.status)}</td>
+          <td class="mono">${Number(workflow.queued || 0)}</td><td class="mono">${Number(workflow.running || 0)}</td>
+          <td class="mono">${Number(workflow.completed || 0)}</td><td class="mono">${Number(workflow.failed || 0)}</td>
+          <td class="mono">${Number(workflow.cancelled || 0)}</td>
+          <td>${badgeList(workflow.eligible_servers)}</td>
+        </tr>`).join("") : `<tr><td colspan="8" class="text-center text-muted py-3">暂无工作流</td></tr>`;
+      }
+
+      async function loadComfyStatus() {
+        const r = await adminFetch("/api/admin/watermark-tasks/comfyui-status");
+        if (!r) return;
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || data.success === false) {
+          const el = document.getElementById("comfyOnlineSummary");
+          el.textContent = "状态获取失败";
+          el.className = "badge text-bg-danger";
+          document.getElementById("comfyServerBody").innerHTML = `<tr><td colspan="6" class="text-center text-danger py-3">${escapeHtml(data.detail || "加载失败")}</td></tr>`;
+          return;
+        }
+        renderComfyStatus(data);
+      }
+
+      function urlHtml(value) {
+        const v = String(value || "");
+        if (!v) return `<span class="text-muted">-</span>`;
+        const safe = escapeHtml(v);
+        if (/^https?:\/\//i.test(v)) {
+          return `<div class="output-cell d-flex align-items-center gap-2">
+            <a class="mono small d-inline-block url-cell flex-grow-1" href="${safe}" target="_blank" rel="noopener noreferrer" title="${safe}">${safe}</a>
+            <button type="button" class="btn btn-outline-primary btn-sm flex-shrink-0" data-preview-url="${safe}">预览</button>
+          </div>`;
+        }
+        return `<span class="mono small d-inline-block url-cell" title="${safe}">${safe}</span>`;
+      }
+
+      function previewMediaType(value) {
+        try {
+          const path = new URL(value).pathname.toLowerCase();
+          if (/\.(?:png|jpe?g|gif|webp|bmp|avif|svg)$/.test(path)) return "image";
+          if (/\.(?:mp4|webm|ogg|mov|m4v|mkv)$/.test(path)) return "video";
+        } catch {}
+        return "unknown";
+      }
+
+      function clearPreview() {
+        const stage = document.getElementById("previewStage");
+        const video = stage.querySelector("video");
+        if (video) video.pause();
+        stage.replaceChildren();
+      }
+
+      function showPreview(url) {
+        clearPreview();
+        const stage = document.getElementById("previewStage");
+        const link = document.getElementById("previewUrl");
+        const mediaType = previewMediaType(url);
+        let media;
+        if (mediaType === "image") {
+          media = document.createElement("img");
+          media.alt = "输出图片预览";
+        } else if (mediaType === "video") {
+          media = document.createElement("video");
+          media.controls = true;
+          media.autoplay = true;
+          media.playsInline = true;
+          media.preload = "metadata";
+        } else {
+          const message = document.createElement("div");
+          message.className = "text-light text-center p-4";
+          message.textContent = "暂不支持预览此文件类型，请使用下方链接打开。";
+          stage.appendChild(message);
+        }
+        if (media) {
+          media.addEventListener("error", () => {
+            clearPreview();
+            const message = document.createElement("div");
+            message.className = "text-light text-center p-4";
+            message.textContent = "媒体加载失败或链接已过期，请使用下方链接检查。";
+            stage.appendChild(message);
+          }, { once: true });
+          media.src = url;
+          stage.appendChild(media);
+        }
+        link.href = url;
+        link.textContent = url;
+        link.title = url;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("previewModal")).show();
+      }
+
+      function render(items) {
+        lastItems = items;
+        const tbody = document.getElementById("tbody");
+        if (!items.length) {
+          tbody.innerHTML = `<tr><td colspan="16" class="text-center text-muted py-4">暂无任务</td></tr>`;
+        } else {
+          tbody.innerHTML = items.map((x, idx) => {
+            const err = errorMessage(x);
+            return `<tr>
+              <td class="mono small">${escapeHtml(x.task_id || x.job_id || "")}</td>
+              <td title="${escapeHtml(x.source_url || "")}"><div class="fw-semibold small">${escapeHtml(x.source_name || "-")}</div><div class="mono small2 text-muted">${escapeHtml(x.source_ip || "-")}:${escapeHtml(x.source_port || "")}</div></td>
+              <td>${taskTypeBadge(x.task_type)}</td>
+              <td>${statusBadge(x.status)}</td>
+              <td class="mono small">${escapeHtml(x.stage || "")}</td>
+              <td>${progressHtml(x.progress)}</td>
+              <td class="mono small2" title="${escapeHtml(x.worker_id || "")}">${escapeHtml(x.server_url || "-")}</td>
+              <td>${urlHtml(resultOutput(x))}</td>
+              <td><span class="small text-danger meta-cell d-inline-block" title="${escapeHtml(err)}">${escapeHtml(err || "-")}</span></td>
+              <td class="mono small">${escapeHtml(formatTime(x.created_at))}</td>
+              <td class="mono small">${escapeHtml(formatTime(x.started_at))}</td>
+              <td class="mono small">${escapeHtml(formatTime(x.finished_at))}</td>
+              <td class="mono small">${escapeHtml(formatDuration(x.created_at, x.finished_at))}</td>
+              <td><button class="btn btn-outline-primary btn-sm" data-payload-detail="${idx}">详情</button></td>
+              <td><button class="btn btn-outline-success btn-sm" data-upstream-payload-detail="${idx}">详情</button></td>
+              <td><button class="btn btn-outline-secondary btn-sm" data-detail="${idx}">详情</button></td>
+              <td>${String(x.status || "").toLowerCase() === "running" ? `<button class="btn btn-outline-danger btn-sm" data-force-fail="${idx}">失败</button>` : "-"}</td>
+            </tr>`;
+          }).join("");
+        }
+        const start = total ? offset + 1 : 0;
+        const end = Math.min(total, offset + limit);
+        const text = `共 ${total} 条，当前 ${start}-${end}`;
+        document.getElementById("pageInfo").textContent = text;
+        document.getElementById("pageInfoBottom").textContent = text;
+        document.getElementById("btnPrev").disabled = offset <= 0;
+        document.getElementById("btnNext").disabled = offset + limit >= total;
+      }
+
+      async function load() {
+        limit = Number(document.getElementById("fltLimit").value || 50);
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        const taskType = document.getElementById("fltTaskType").value;
+        if (taskType) params.set("task_type", taskType);
+        const source = document.getElementById("fltSource").value;
+        if (source) params.set("source", source);
+        if (hideFaceMaskSwitch.checked) params.set("exclude_keyword", "face_mask");
+        const status = document.getElementById("fltStatus").value;
+        if (status) params.set("status", status);
+        const r = await adminFetch(`/api/admin/watermark-tasks?${params.toString()}`);
+        if (!r) return;
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.success === false) {
+          toast(d.detail || "加载去水印任务失败", "error");
+          render([]);
+          return;
+        }
+        total = Number(d.total || 0);
+        const stats = d.stats || {};
+        syncSourceFilter(d.available_sources || d.sources || []);
+        document.getElementById("statQueued").textContent = String(stats.queued || 0);
+        document.getElementById("statRunning").textContent = String(stats.running || 0);
+        document.getElementById("statCompleted").textContent = String(stats.completed || 0);
+        document.getElementById("statFailed").textContent = String(stats.failed || 0);
+        render(Array.isArray(d.items) ? d.items : []);
+      }
+
+      function syncSourceFilter(sources) {
+        const select = document.getElementById("fltSource");
+        const current = select.value;
+        const options = (Array.isArray(sources) ? sources : []).map((source) =>
+          `<option value="${escapeHtml(source.id || "")}">${escapeHtml(source.name || "服务器")} · ${escapeHtml(source.host || source.url || "-")}:${escapeHtml(source.port || "")}</option>`
+        ).join("");
+        select.innerHTML = `<option value="">全部服务器</option>${options}`;
+        if ([...select.options].some((option) => option.value === current)) select.value = current;
+      }
+
+      function renderHealth(sources) {
+        const items = Array.isArray(sources) ? sources : [];
+        document.getElementById("taskHealthList").innerHTML = items.length ? items.map((source) => {
+          const healthy = source.healthy;
+          const online = source.online;
+          const cls = healthy ? "success" : online ? "warning" : "danger";
+          const label = healthy ? "健康" : online ? "异常" : "离线";
+          const title = source.error || source.url || "";
+          const address = `${source.host || "-"}:${source.port || ""}`;
+          return `<span class="badge text-bg-${cls} health-item" title="${escapeHtml(title)}">${escapeHtml(source.name || "服务器")} ${escapeHtml(address)} · ${label}</span>`;
+        }).join("") : `<span class="badge text-bg-secondary">暂无服务器</span>`;
+        syncSourceFilter(items);
+      }
+
+      async function loadHealth() {
+        const r = await adminFetch("/api/admin/watermark-tasks/health");
+        if (!r) return;
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.success === false) {
+          document.getElementById("taskHealthList").innerHTML = `<span class="badge text-bg-danger">健康检查失败</span>`;
+          return;
+        }
+        renderHealth(d.sources || []);
+      }
+
+      function renderSettings(settings) {
+        const enabled = !!settings.skip_video_watermark_remove;
+        document.getElementById("skipWatermarkSwitch").checked = enabled;
+        document.getElementById("skipWatermarkHint").textContent = enabled ? "已开启：后续 VEO 结果不请求去水印服务" : "已关闭：后续 VEO 结果会请求去水印服务";
+      }
+
+      async function loadSettings() {
+        const r = await adminFetch("/api/admin/watermark-tasks/settings");
+        if (!r) return;
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.success === false) {
+          toast(d.detail || "加载去水印开关失败", "error");
+          return;
+        }
+        renderSettings(d.settings || {});
+      }
+
+      async function saveSettings() {
+        if (savingSettings) return;
+        savingSettings = true;
+        const el = document.getElementById("skipWatermarkSwitch");
+        el.disabled = true;
+        try {
+          const enabled = !!el.checked;
+          const r = await adminFetch("/api/admin/watermark-tasks/settings", {
+            method: "POST",
+            body: JSON.stringify({ skip_video_watermark_remove: enabled }),
+          });
+          if (!r) return;
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.success === false) throw new Error(d.detail || "保存去水印开关失败");
+          renderSettings(d.settings || { skip_video_watermark_remove: enabled });
+          toast(d.message || "去水印开关已保存", "success");
+        } catch (e) {
+          toast(e.message || String(e), "error");
+          await loadSettings();
+        } finally {
+          el.disabled = false;
+          savingSettings = false;
+        }
+      }
+
+      async function loadSdBalance() {
+        const el = document.getElementById("sdBalance");
+        try {
+          const r = await adminFetch("/api/admin/watermark-tasks/apikey-details");
+          if (!r) return;
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const d = await r.json();
+          const credits = Number(d.remaining_credits);
+          if (!Number.isFinite(credits)) throw new Error("invalid");
+          el.textContent = credits.toFixed(2);
+          el.className = "mono fw-semibold " + (credits < 100 ? "text-danger" : credits < 500 ? "text-warning" : "text-success");
+        } catch {
+          el.textContent = "获取失败";
+          el.className = "mono fw-semibold text-danger";
+        }
+      }
+
+      function localDateValue(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+
+      function renderBilling(data) {
+        const items = Array.isArray(data?.items) ? data.items : [];
+        billingTotal = Math.max(0, Number(data?.total) || 0);
+        billingPage = Math.max(1, Number(data?.page_number) || billingPage);
+        const pageSize = Math.max(1, Number(data?.page_size) || Number(document.getElementById("billingPageSize").value) || 50);
+        const pageCount = Math.max(1, Math.ceil(billingTotal / pageSize));
+        const pageCredits = items.reduce((sum, item) => sum + (Number(item?.accounted_credits) || 0), 0);
+        document.getElementById("billingSummary").textContent = `共 ${billingTotal} 条，本页扣费 ${pageCredits.toFixed(6)} credits`;
+        document.getElementById("billingPageInfo").textContent = `第 ${billingPage} / ${pageCount} 页`;
+        document.getElementById("btnBillingPrev").disabled = billingPage <= 1;
+        document.getElementById("btnBillingNext").disabled = billingPage >= pageCount;
+        document.getElementById("billingBody").innerHTML = items.length ? items.map((item) => {
+          const credits = Number(item?.accounted_credits);
+          const tokens = Number(item?.total_tokens);
+          const unitPrice = Number(item?.unit_price);
+          return `<tr>
+            <td class="small text-nowrap">${escapeHtml(formatTime(item?.created_at))}</td>
+            <td class="mono small">${escapeHtml(item?.upstream_task_id || "-")}</td>
+            <td class="mono small">${escapeHtml(item?.model_id || "-")}</td>
+            <td>${statusBadge(item?.status)}</td>
+            <td class="mono text-end">${Number.isFinite(credits) ? credits.toFixed(6) : "-"}</td>
+            <td class="mono text-end">${Number.isFinite(tokens) ? tokens.toLocaleString("zh-CN") : "-"}</td>
+            <td class="mono text-end">${Number.isFinite(unitPrice) ? unitPrice.toFixed(2) : "-"}</td>
+            <td>${item?.token_accounted ? '<span class="badge text-bg-success">是</span>' : '<span class="badge text-bg-secondary">否</span>'}</td>
+          </tr>`;
+        }).join("") : `<tr><td colspan="8" class="text-center text-muted py-4">没有符合条件的消费记录</td></tr>`;
+      }
+
+      async function loadBillingDetails() {
+        const body = document.getElementById("billingBody");
+        const queryButton = document.getElementById("btnBillingQuery");
+        const startDate = document.getElementById("billingStartDate").value;
+        const endDate = document.getElementById("billingEndDate").value;
+        if (startDate && endDate && startDate > endDate) {
+          toast("开始日期不能晚于结束日期", "error");
+          return;
+        }
+        const params = new URLSearchParams({
+          page_number: String(billingPage),
+          page_size: document.getElementById("billingPageSize").value,
+        });
+        if (startDate) params.set("start_date", startDate);
+        if (endDate) params.set("end_date", endDate);
+        queryButton.disabled = true;
+        body.innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">加载中</td></tr>`;
+        try {
+          const r = await adminFetch(`/api/admin/watermark-tasks/billing-details?${params}`);
+          if (!r) return;
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${r.status}`);
+          renderBilling(data);
+          billingLoaded = true;
+        } catch (e) {
+          body.innerHTML = `<tr><td colspan="8" class="text-center text-danger py-4">${escapeHtml(e.message || "消费明细加载失败")}</td></tr>`;
+          document.getElementById("billingSummary").textContent = "加载失败";
+        } finally {
+          queryButton.disabled = false;
+        }
+      }
+
+      document.getElementById("btnRefresh").addEventListener("click", () => { load(); loadComfyStatus(); loadHealth(); });
+      document.getElementById("btnBillingDetails").addEventListener("click", () => {
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("billingModal")).show();
+        if (!billingLoaded) loadBillingDetails();
+      });
+      document.getElementById("btnBillingQuery").addEventListener("click", () => { billingPage = 1; loadBillingDetails(); });
+      document.getElementById("billingPageSize").addEventListener("change", () => { billingPage = 1; loadBillingDetails(); });
+      document.getElementById("btnBillingPrev").addEventListener("click", () => { if (billingPage > 1) { billingPage -= 1; loadBillingDetails(); } });
+      document.getElementById("btnBillingNext").addEventListener("click", () => {
+        const pageSize = Number(document.getElementById("billingPageSize").value) || 50;
+        if (billingPage * pageSize < billingTotal) { billingPage += 1; loadBillingDetails(); }
+      });
+      document.getElementById("skipWatermarkSwitch").addEventListener("change", () => saveSettings());
+      hideFaceMaskSwitch.addEventListener("change", () => {
+        if (hideFaceMaskSwitch.checked && document.getElementById("fltTaskType").value === "face_mask") {
+          document.getElementById("fltTaskType").value = "";
+        }
+        try { localStorage.setItem(hideFaceMaskKey, String(hideFaceMaskSwitch.checked)); } catch {}
+        offset = 0;
+        load();
+      });
+      document.getElementById("fltTaskType").addEventListener("change", () => {
+        if (document.getElementById("fltTaskType").value === "face_mask" && hideFaceMaskSwitch.checked) {
+          hideFaceMaskSwitch.checked = false;
+          try { localStorage.setItem(hideFaceMaskKey, "false"); } catch {}
+        }
+        offset = 0;
+        load();
+      });
+      document.getElementById("fltSource").addEventListener("change", () => { offset = 0; load(); });
+      document.getElementById("fltStatus").addEventListener("change", () => { offset = 0; load(); });
+      document.getElementById("fltLimit").addEventListener("change", () => { offset = 0; load(); });
+      document.getElementById("btnPrev").addEventListener("click", () => { offset = Math.max(0, offset - limit); load(); });
+      document.getElementById("btnNext").addEventListener("click", () => { if (offset + limit < total) { offset += limit; load(); } });
+      document.getElementById("tbody").addEventListener("click", async (e) => {
+        const failBtn = e.target?.closest?.("[data-force-fail]");
+        if (failBtn) {
+          const item = lastItems[Number(failBtn.getAttribute("data-force-fail"))];
+          if (!item) return;
+          if (!confirm(`确认将任务 ${item.task_id || item.job_id} 标记为失败？下游将收到“内部错误”。`)) return;
+          failBtn.disabled = true;
+          try {
+            const sourceId = encodeURIComponent(item.source_id || "primary");
+            const taskId = encodeURIComponent(item.task_id || item.job_id || "");
+            const r = await adminFetch(`/api/admin/watermark-tasks/${sourceId}/${taskId}/fail`, { method: "POST" });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || data.success === false) throw new Error(data.detail || "标记失败失败");
+            toast("任务已标记为失败", "success");
+            load();
+          } catch (error) { toast(error.message || String(error), "error"); }
+          finally { failBtn.disabled = false; }
+          return;
+        }
+        const previewBtn = e.target?.closest?.("[data-preview-url]");
+        if (previewBtn) {
+          showPreview(previewBtn.getAttribute("data-preview-url") || "");
+          return;
+        }
+        const payloadBtn = e.target?.closest?.("[data-payload-detail]");
+        if (payloadBtn) {
+          const item = lastItems[Number(payloadBtn.getAttribute("data-payload-detail"))];
+          if (!item) return;
+          payloadBtn.disabled = true;
+          try {
+            const sourceId = encodeURIComponent(item.source_id || "primary");
+            const taskId = encodeURIComponent(item.task_id || item.job_id || "");
+            const r = await adminFetch(`/api/admin/watermark-tasks/${sourceId}/${taskId}/payload`);
+            if (!r) return;
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || data.success === false) throw new Error(data.detail || "加载任务参数失败");
+            document.getElementById("detailTitle").textContent = `${item.task_id || item.job_id || "任务"} 参数`;
+            document.getElementById("detailBody").textContent = data.payload == null
+              ? "该任务没有保存参数"
+              : JSON.stringify(data.payload, null, 2);
+            bootstrap.Modal.getOrCreateInstance(document.getElementById("detailModal")).show();
+          } catch (error) {
+            toast(error.message || String(error), "error");
+          } finally {
+            payloadBtn.disabled = false;
+          }
+          return;
+        }
+        const upstreamPayloadBtn = e.target?.closest?.("[data-upstream-payload-detail]");
+        if (upstreamPayloadBtn) {
+          const item = lastItems[Number(upstreamPayloadBtn.getAttribute("data-upstream-payload-detail"))];
+          if (!item) return;
+          upstreamPayloadBtn.disabled = true;
+          try {
+            const sourceId = encodeURIComponent(item.source_id || "primary");
+            const taskId = encodeURIComponent(item.task_id || item.job_id || "");
+            const r = await adminFetch(`/api/admin/watermark-tasks/${sourceId}/${taskId}/payload`);
+            if (!r) return;
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || data.success === false) throw new Error(data.detail || "加载整理后参数失败");
+            document.getElementById("detailTitle").textContent = `${item.task_id || item.job_id || "任务"} 整理后参数`;
+            document.getElementById("detailBody").textContent = data.upstream_payload == null
+              ? "该任务尚未生成整理后的上游参数"
+              : JSON.stringify(data.upstream_payload, null, 2);
+            bootstrap.Modal.getOrCreateInstance(document.getElementById("detailModal")).show();
+          } catch (error) {
+            toast(error.message || String(error), "error");
+          } finally {
+            upstreamPayloadBtn.disabled = false;
+          }
+          return;
+        }
+        const btn = e.target?.closest?.("[data-detail]");
+        if (!btn) return;
+        const item = lastItems[Number(btn.getAttribute("data-detail"))];
+        if (!item) return;
+        document.getElementById("detailTitle").textContent = item.task_id || item.job_id || "任务详情";
+        document.getElementById("detailBody").textContent = JSON.stringify(item, null, 2);
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("detailModal")).show();
+      });
+      document.getElementById("previewModal").addEventListener("hidden.bs.modal", clearPreview);
+
+      const today = new Date();
+      document.getElementById("billingEndDate").value = localDateValue(today);
+      document.getElementById("billingStartDate").value = localDateValue(new Date(today.getFullYear(), today.getMonth(), 1));
+
+      loadSettings();
+      load();
+      loadComfyStatus();
+      loadHealth();
+      loadSdBalance();
+      window.setInterval(() => {
+        if (!document.hidden) { load(); loadComfyStatus(); }
+      }, 10000);
+      window.setInterval(() => {
+        if (!document.hidden) loadHealth();
+      }, 10000);
+      window.setInterval(() => {
+        if (!document.hidden) loadSdBalance();
+      }, 60000);
+    </script>
+  </body>
+</html>

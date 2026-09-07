@@ -119,6 +119,11 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "veo-3-1",
     "veo-omni-flash",
     "veo-omni-flash-video-edit",
+    # `-1080p` 变体：与去掉后缀的同名模型完全一致，只是在视频生成成功后再做一次
+    # 1080p 超分，成功则返回超分后的地址（超分失败不影响任务成功）。
+    "veo-3-1-1080p",
+    "veo-omni-flash-1080p",
+    "veo-omni-flash-video-edit-1080p",
     "gpt-image2-1k",
     "gpt-image2-2k",
     "gpt-image2-4k",
@@ -238,11 +243,45 @@ def _normalize_image_generation_task_payload(payload: Dict[str, Any]) -> tuple[s
     return task_type_code, normalized
 
 
+UPSCALE_1080P_MODEL_SUFFIX = "-1080p"
+UPSCALE_1080P_VIDEO_MODELS = (
+    "veo-3-1-1080p",
+    "veo-omni-flash-1080p",
+    "veo-omni-flash-video-edit-1080p",
+)
+UPSCALE_1080P_VIDEO_MODEL_SET = set(UPSCALE_1080P_VIDEO_MODELS)
+
+
+def _split_upscale_1080p_model(model: str) -> tuple[str, bool]:
+    """Split a `<base>-1080p` public model name into its base name plus the upscale flag."""
+
+    raw = str(model or "").strip()
+    if raw in UPSCALE_1080P_VIDEO_MODEL_SET:
+        return raw[: -len(UPSCALE_1080P_MODEL_SUFFIX)], True
+    return raw, False
+
+
+def _public_model_name(payload: Dict[str, Any]) -> str:
+    """Public model name to echo back: the exact name the caller requested."""
+
+    p = payload or {}
+    return str(p.get("public_model") or p.get("model") or "").strip()
+
+
 def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seconds_4: bool = True) -> tuple[str, Dict[str, Any]]:
     """Map OpenAI-compatible public video model names to internal task types."""
 
     payload = dict(payload or {})
     model = str(payload.get("model") or "").strip()
+    # `<base>-1080p` 走与 `<base>` 完全相同的生成分支：这里先剥掉后缀，让下面所有
+    # 按 model 精确匹配的判断（含执行器内部）保持原样，只额外打上超分标记。
+    # public_model 保留调用方请求的原始名字，供响应回显 / 上游按模型计费对账。
+    base_model, want_upscale_1080p = _split_upscale_1080p_model(model)
+    if want_upscale_1080p:
+        payload["public_model"] = model
+        payload["model"] = base_model
+        payload["upscale_1080p"] = True
+        model = base_model
     if require_image_seconds_4:
         _require_video_image_seconds_4(payload, model)
     if model in {"seedance-2", "seedance-2-fast"}:
@@ -440,7 +479,7 @@ def _build_newapi_video_create_response(task_id: str, payload: Dict[str, Any]) -
     """Build NewAPI-compatible response for POST /v1/videos."""
 
     p = dict(payload or {})
-    model = str(p.get("model") or "").strip()
+    model = _public_model_name(p)
     duration = 4 if model in OPENAI_COMPAT_IMAGE_MODEL_SET else _public_duration(p)
     aspect_ratio = _public_aspect_ratio(p)
     resp: Dict[str, Any] = {
@@ -611,7 +650,7 @@ async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
     status = _normalize_newapi_task_status(task.status)
     video_url, image_url, result_urls = _extract_public_result_urls(result)
     original_watermarked_video_url = str((result or {}).get("original_watermarked_video_url") or "").strip() or None
-    model = str(payload.get("model") or (result or {}).get("model") or "").strip()
+    model = _public_model_name(payload) or str((result or {}).get("model") or "").strip()
     duration = 4 if model in OPENAI_COMPAT_IMAGE_MODEL_SET else _public_duration(payload)
     aspect_ratio = _public_aspect_ratio(payload)
 

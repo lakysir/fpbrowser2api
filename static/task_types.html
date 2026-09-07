@@ -154,7 +154,7 @@
         </div>
         <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
         <a class="btn btn-warning btn-sm me-3" href="https://roxybrowser.com/?code=0416Z62A" target="_blank" rel="noopener noreferrer">Roxy浏览器下载</a>
-        <a class="btn btn-danger btn-sm me-3" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
+        <a class="btn btn-danger btn-sm me-3" href="https://www.webshare.io/?referral_code=jy4yn1bfchnz" target="_blank" rel="noopener noreferrer">购买代理IP</a>
         <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
@@ -199,8 +199,12 @@
                   <input class="form-control mono" id="typeCode" placeholder="gen_video / gen_image" />
                 </div>
                 <div class="col-12 col-md-3">
-                  <label class="form-label form-label-tight">并发数</label>
+                  <label class="form-label form-label-tight">单窗口并发数</label>
                   <input class="form-control form-control-sm" id="typeConcurrency" type="number" min="1" value="1" />
+                </div>
+                <div class="col-12 col-md-3">
+                  <label class="form-label form-label-tight">任务类型总并发数</label>
+                  <input class="form-control form-control-sm" id="typeTotalConcurrency" type="number" min="1" value="100" />
                 </div>
                 <div class="col-12 col-md-3">
                   <label class="form-label form-label-tight">连续错误阈值</label>
@@ -961,6 +965,7 @@
           "typeCode",
           "typeProjectId",
           "typeConcurrency",
+          "typeTotalConcurrency",
           "typeErrThr",
           "typeErrCloseWinThr",
           "typeTimeout",
@@ -2682,6 +2687,7 @@
         const projectSel = document.getElementById("typeProjectId");
         if (projectSel) projectSel.value = (t?.project_id == null ? "" : String(t.project_id));
         document.getElementById("typeConcurrency").value = t?.concurrency ?? 1;
+        document.getElementById("typeTotalConcurrency").value = t?.total_concurrency ?? 100;
         document.getElementById("typeErrThr").value = t?.continuous_error_threshold ?? 3;
         document.getElementById("typeErrCloseWinThr").value = t?.continuous_error_close_window_threshold ?? 3;
         document.getElementById("typeTimeout").value = t?.timeout_seconds ?? 1800;
@@ -2723,6 +2729,7 @@
               return Number.isNaN(n) ? null : n;
             })(),
             concurrency: parseInt(document.getElementById("typeConcurrency").value, 10) || 1,
+            total_concurrency: parseInt(document.getElementById("typeTotalConcurrency").value, 10) || 100,
             continuous_error_threshold: parseInt(document.getElementById("typeErrThr").value, 10) || 3,
             continuous_error_close_window_threshold: parseInt(document.getElementById("typeErrCloseWinThr").value, 10) || 3,
             timeout_seconds: parseInt(document.getElementById("typeTimeout").value, 10) || 1800,
@@ -4866,16 +4873,17 @@
 
       async function clearBrowserCache(mappingId, fromEl) {
         const btn = fromEl?.closest?.("button") || fromEl;
+        let succeeded = false;
         try {
           setBtnBusy(btn, true, { loadingText: "清缓存" });
           await postJson(`/api/admin/task-type-windows/${mappingId}/clear-browser-cache?local_only=true&local_partial=false`, { method: "POST" });
-          await loadMappings({ preserveSelection: true });
+          succeeded = true;
           toast("已清除窗口本地缓存", "success");
-          flashBtnText(btn, "已清除");
         } catch (e) {
           toast(e.message || "清除缓存失败", "error");
         } finally {
           setBtnBusy(btn, false);
+          if (succeeded) flashBtnText(btn, "已清除");
         }
       }
 

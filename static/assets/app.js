@@ -76,6 +76,7 @@ export function escapeHtml(s) {
 }
 
 export function setActiveNav(id) {
+  ensureAdminNavLinks();
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.remove("active"));
   const el = document.querySelector(`[data-nav="${id}"]`);
   if (el) el.classList.add("active");
@@ -86,12 +87,29 @@ const PAGE_PATHS = {
   projects: "/admin/projects",
   task_types: "/admin/task-types",
     tasks: "/admin/tasks",
+    watermark_tasks: "/admin/watermark-tasks",
     test: "/admin/test",
     image_resources: "/admin/image-resources",
     totp: "/admin/totp",
   logs: "/admin/logs",
   users: "/admin/users",
 };
+
+function ensureAdminNavLinks() {
+  const nav = document.querySelector(".navbar-nav");
+  if (!nav || nav.querySelector('[data-nav="watermark_tasks"]')) return;
+  const a = document.createElement("a");
+  a.className = "nav-link";
+  a.dataset.nav = "watermark_tasks";
+  a.href = "/admin/watermark-tasks";
+  a.textContent = "去水印任务";
+  const tasks = nav.querySelector('[data-nav="tasks"]');
+  if (tasks && tasks.parentElement === nav) {
+    tasks.insertAdjacentElement("afterend", a);
+  } else {
+    nav.appendChild(a);
+  }
+}
 
 let adminProfileCache = null;
 let adminProfilePromise = null;
@@ -141,6 +159,7 @@ function firstAllowedPagePath(user) {
 }
 
 export function applyNavPermissions(user) {
+  ensureAdminNavLinks();
   document.querySelectorAll("[data-nav]").forEach((el) => {
     const key = String(el.getAttribute("data-nav") || "").trim();
     const allowed = isPageAllowed(user, key);

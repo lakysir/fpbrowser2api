@@ -1,4 +1,4 @@
-import { simulateHumanActivity, uploadDataUrlListToAliyunOss } from "./common.js";
+import { simulateHumanActivity, uploadDataUrlListToR2 } from "./common.js";
 
 const CHATGPT = "https://chatgpt.com";
 const WEB_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
@@ -1447,8 +1447,8 @@ async function runImage2CodexWorkflow(tabId, token, payload, runtime) {
   }
   let outUrls = uniq(allUrls).slice(0, count);
   if (!outUrls.length) throw new Error(`gpt-image-2 ${resolution} codex returned no images; tail=${rawTextTail.slice(-500)}`);
-  let ossUploads = [];
-  if ((p.oss_upload || p.extension_oss_upload) && outUrls.some(u => /^data:image\//i.test(String(u || "")))) {
+  let r2Uploads = [];
+  if ((p.r2_upload || p.extension_r2_upload) && outUrls.some(u => /^data:image\//i.test(String(u || "")))) {
     await runtime.progress(93, {
       stage: "codex_asset_ready",
       route: "codex",
@@ -1458,24 +1458,24 @@ async function runImage2CodexWorkflow(tabId, token, payload, runtime) {
       asset_count: outUrls.length,
       data_url_count: outUrls.filter(u => /^data:image\//i.test(String(u || ""))).length
     });
-    const uploadResult = await uploadDataUrlListToAliyunOss(outUrls, p.oss_upload || p.extension_oss_upload, {
+    const uploadResult = await uploadDataUrlListToR2(outUrls, p.r2_upload || p.extension_r2_upload, {
       runtime,
-      stage: "oss_upload",
+      stage: "r2_upload",
       progress: 94,
-      objectKeyPrefix: (p.oss_upload && p.oss_upload.object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
+      objectKeyPrefix: (p.r2_upload && p.r2_upload.object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
       taskId: p._bridge_task_id || p.task_id || "",
       resolution
     });
     outUrls = uploadResult.values || outUrls;
-    ossUploads = uploadResult.uploads || [];
+    r2Uploads = uploadResult.uploads || [];
   }
-  await runtime.progress(100, { stage: "done", route: "codex", resolution, aspect_ratio: aspectRatio, size, asset_count: outUrls.length, oss_uploads: ossUploads.length });
-  const ossMimeByUrl = new Map((ossUploads || []).map(u => [u.url, u.content_type || u.contentType || ""]));
+  await runtime.progress(100, { stage: "done", route: "codex", resolution, aspect_ratio: aspectRatio, size, asset_count: outUrls.length, r2_uploads: r2Uploads.length });
+  const r2MimeByUrl = new Map((r2Uploads || []).map(u => [u.url, u.content_type || u.contentType || ""]));
   const assets = outUrls.map((url) => ({
     url,
     width: dims.width,
     height: dims.height,
-    mime: ossMimeByUrl.get(url) || (/^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png"))
+    mime: r2MimeByUrl.get(url) || (/^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png"))
   }));
   return {
     type: "gpt_workflow_image",
@@ -1491,7 +1491,7 @@ async function runImage2CodexWorkflow(tabId, token, payload, runtime) {
     urls: outUrls,
     result_urls: outUrls,
     assets,
-    oss_uploads: ossUploads,
+    r2_uploads: r2Uploads,
     data: assets.map(a => ({ url: a.url, width: a.width, height: a.height, mime: a.mime })),
     share_url: outUrls[0] || "",
     image_url: outUrls[0] || "",
@@ -1605,8 +1605,8 @@ function shouldProxyAssetThroughPage(url) {
   }
 }
 
-async function uploadPageAccessibleAssetsToOss(tabId, urls, payload, runtime, options = {}) {
-  const cfg = payload && (payload.oss_upload || payload.extension_oss_upload);
+async function uploadPageAccessibleAssetsToR2(tabId, urls, payload, runtime, options = {}) {
+  const cfg = payload && (payload.r2_upload || payload.extension_r2_upload);
   const input = Array.isArray(urls) ? urls : [];
   if (!cfg || !input.length) return { values: input.slice(), uploads: [], skipped: true };
   const out = input.slice();
@@ -1647,11 +1647,11 @@ async function uploadPageAccessibleAssetsToOss(tabId, urls, payload, runtime, op
     }
   }
   if (!dataUrls.length) return { values: out, uploads, skipped: !uploads.length };
-  const uploadResult = await uploadDataUrlListToAliyunOss(dataUrls, cfg, {
+  const uploadResult = await uploadDataUrlListToR2(dataUrls, cfg, {
     runtime,
-    stage: options.stage || "oss_upload",
+    stage: options.stage || "r2_upload",
     progress: options.progress || 92,
-    objectKeyPrefix: (payload.oss_upload && payload.oss_upload.object_key_prefix) || options.objectKeyPrefix || "gpt_workflow/image",
+    objectKeyPrefix: (payload.r2_upload && payload.r2_upload.object_key_prefix) || options.objectKeyPrefix || "gpt_workflow/image",
     taskId: payload._bridge_task_id || payload.task_id || "",
     resolution: options.resolution || ""
   });
@@ -1721,32 +1721,32 @@ async function runImage2Workflow(tabId, token, payload, runtime) {
   const out = await runConversationWorkflow(tabId, token, p, "image", runtime);
   let outUrls = uniq(out.urls || []);
   if (!outUrls.length) throw new Error(`gpt-image-2 ${resolution} returned no images`);
-  let ossUploads = [];
-  if (p.oss_upload || p.extension_oss_upload) {
-    const uploadResult = await uploadPageAccessibleAssetsToOss(tabId, outUrls, p, runtime, {
+  let r2Uploads = [];
+  if (p.r2_upload || p.extension_r2_upload) {
+    const uploadResult = await uploadPageAccessibleAssetsToR2(tabId, outUrls, p, runtime, {
       downloadStage: "page_asset_download",
       downloadProgress: 90,
       downloadDoneStage: "page_asset_download_done",
       downloadDoneProgress: 91,
-      stage: "oss_upload",
+      stage: "r2_upload",
       progress: 93,
       contentType: mimeForImageFormat(preferredImage2OutputFormat(p, resolution) || p.output_format || "jpeg"),
       jpegQuality: Number.isFinite(Number(p.jpeg_quality || p.jpegQuality)) ? Number(p.jpeg_quality || p.jpegQuality) : 0.86,
       downloadTimeoutMs: p.asset_download_timeout_ms || p.assetDownloadTimeoutMs || p.download_timeout_ms || p.downloadTimeoutMs,
-      objectKeyPrefix: ((p.oss_upload || p.extension_oss_upload) && (p.oss_upload || p.extension_oss_upload).object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
+      objectKeyPrefix: ((p.r2_upload || p.extension_r2_upload) && (p.r2_upload || p.extension_r2_upload).object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
       resolution
     });
     outUrls = uploadResult.values || outUrls;
-    ossUploads = uploadResult.uploads || [];
+    r2Uploads = uploadResult.uploads || [];
   }
-  const ossMimeByUrl = new Map((ossUploads || []).map(u => [u.url, u.content_type || u.contentType || ""]));
+  const r2MimeByUrl = new Map((r2Uploads || []).map(u => [u.url, u.content_type || u.contentType || ""]));
   const assets = outUrls.map((url) => ({
     url,
     width: dims.width,
     height: dims.height,
-    mime: ossMimeByUrl.get(url) || (/^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png"))
+    mime: r2MimeByUrl.get(url) || (/^data:image\/webp/i.test(url) ? "image/webp" : (/^data:image\/jpe?g/i.test(url) ? "image/jpeg" : "image/png"))
   }));
-  await runtime.progress(100, { stage: "done", route: "conversation", resolution, aspect_ratio: aspectRatio, size, asset_count: outUrls.length, oss_uploads: ossUploads.length });
+  await runtime.progress(100, { stage: "done", route: "conversation", resolution, aspect_ratio: aspectRatio, size, asset_count: outUrls.length, r2_uploads: r2Uploads.length });
   return {
     ...out,
     type: "gpt_workflow_image",
@@ -1761,7 +1761,7 @@ async function runImage2Workflow(tabId, token, payload, runtime) {
     urls: outUrls,
     result_urls: outUrls,
     assets,
-    oss_uploads: ossUploads,
+    r2_uploads: r2Uploads,
     data: assets.map(a => ({ url: a.url, width: a.width, height: a.height, mime: a.mime })),
     share_url: outUrls[0] || "",
     image_url: outUrls[0] || "",

@@ -31,6 +31,7 @@ from .sora_task_executor import (
     window_pool_guard_unknown_handler_page,
 )
 from .task_executor_types import NonPenalizedTaskError
+from .video_upscale_client import upscale_1080p_enabled, upscale_video_to_1080p
 
 def _sora_task_error_needs_forced_access_token_refresh(exc: BaseException) -> bool:
     """sora_gen_video 失败时：在 exception 路径触发一次窗口内重抓 token，供后续队列重试用。"""
@@ -39,6 +40,97 @@ def _sora_task_error_needs_forced_access_token_refresh(exc: BaseException) -> bo
     if "token_expired" in ml or "token is expired" in ml:
         return True
     return False
+
+
+def _apply_upscaled_video_url(result: Dict[str, Any], upscaled_url: str, *, source_url: str, upscale_task_id: Optional[str]) -> Dict[str, Any]:
+    """把 result 里的视频地址替换为超分地址，并留下超分前的地址便于排查。"""
+    out = dict(result or {})
+    for key in ("video_url", "share_url", "url"):
+        if key in out or key == "video_url":
+            out[key] = upscaled_url
+    result_urls = out.get("result_urls")
+    if isinstance(result_urls, list) and result_urls:
+        out["result_urls"] = [upscaled_url if str(item or "").strip() == source_url else item for item in result_urls]
+        if upscaled_url not in out["result_urls"]:
+            out["result_urls"].insert(0, upscaled_url)
+    else:
+        out["result_urls"] = [upscaled_url]
+    out["upscaled_1080p"] = True
+    out["upscaled_1080p_url"] = upscaled_url
+    out["pre_upscale_video_url"] = source_url
+    if upscale_task_id:
+        out["upscale_task_id"] = upscale_task_id
+    return out
+
+
+async def _maybe_upscale_result_to_1080p(
+    result: Any,
+    *,
+    payload: Dict[str, Any],
+    task_id: str,
+    progress_cb: Any,
+) -> Any:
+    """`*-1080p` 模型：视频生成成功后再做一次 1080p 超分。
+
+    整段是尽力而为——开关关闭、取不到视频地址、超分失败或超时，都保留超分前的
+    地址并把原因写进 result，任务照常算成功。超分耗时可能超过 10 分钟，因此这里
+    刻意放在 `asyncio.wait_for(veo_workflow, ...)` 之外，不受生成超时约束。
+    """
+    if not isinstance(result, dict):
+        return result
+    if not (payload or {}).get("upscale_1080p"):
+        return result
+    try:
+        return await _upscale_result_to_1080p_impl(
+            result, task_id=task_id, progress_cb=progress_cb
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - 超分永不影响任务成功
+        logger.warning("task %s 1080p upscale raised (keep original video): %s", task_id, e)
+        out = dict(result)
+        out["upscaled_1080p"] = False
+        out["upscale_error"] = f"{e.__class__.__name__}: {e}"
+        return out
+
+
+async def _upscale_result_to_1080p_impl(
+    result: Dict[str, Any],
+    *,
+    task_id: str,
+    progress_cb: Any,
+) -> Dict[str, Any]:
+    if not upscale_1080p_enabled():
+        out = dict(result)
+        out["upscaled_1080p"] = False
+        out["upscale_skipped"] = True
+        out["upscale_error"] = "1080p upscale is disabled by config video_postprocess.upscale_1080p"
+        return out
+
+    source_url = _veo_pick_result_video_url(result)
+    if not source_url:
+        out = dict(result)
+        out["upscaled_1080p"] = False
+        out["upscale_error"] = "no public video url in result"
+        return out
+
+    upscaled = await upscale_video_to_1080p(source_url, progress_cb=progress_cb)
+    if upscaled.ok:
+        logger.info("task %s upscaled to 1080p: %s", task_id, upscaled.video_url)
+        return _apply_upscaled_video_url(
+            result,
+            str(upscaled.video_url),
+            source_url=source_url,
+            upscale_task_id=upscaled.task_id,
+        )
+
+    logger.warning("task %s 1080p upscale failed (keep original video): %s", task_id, upscaled.error)
+    out = dict(result)
+    out["upscaled_1080p"] = False
+    out["upscale_error"] = upscaled.error or "upscale failed"
+    if upscaled.task_id:
+        out["upscale_task_id"] = upscaled.task_id
+    return out
 
 
 def _db_bool(value: Any, *, default: bool = False) -> bool:
@@ -71,6 +163,7 @@ from .grok_workflow_executor import (
     grok_workflow,
 )
 from .veo_workflow_executor import (
+    _veo_pick_result_video_url,
     _veo_resolve_n_frames,
     _veo_payload_video_model_is_omni,
     _veo_payload_image_model_4k,
@@ -1478,6 +1571,26 @@ class TaskService:
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
         - 若任务类型开启窗口池：仅从 `_window_pool_targets` 内由 DB 单事务 `pick_and_reserve_window_from_pool` 原子挑选（与全局 pick 相同：+60s error_cooldown_until，避免高并发下多任务盯上同一 mapping）；池为空或无可用则返回 None（不回退全局 pick）
         """
+        try:
+            tt = await self.db.get_task_type_by_code(task_type_code)
+        except Exception:
+            tt = None
+        if tt:
+            total_limit = max(1, int(getattr(tt, "total_concurrency", 100) or 100))
+            try:
+                current_total = await self.db.get_task_type_inflight_total(task_type_code)
+            except Exception as e:
+                logger.warning("task_type total concurrency check failed code=%s err=%s", task_type_code, e)
+                current_total = 0
+            if current_total >= total_limit:
+                logger.info(
+                    "_pick_window total concurrency limit reached task_type_code=%s current=%s limit=%s",
+                    task_type_code,
+                    current_total,
+                    total_limit,
+                )
+                return None
+
         floor, credit_threthold, plan_type = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
         logger.info(
             "_pick_window floor=%s credit_threthold=%s plan_type=%s task_type_code=%s",
@@ -1486,10 +1599,6 @@ class TaskService:
             plan_type,
             task_type_code,
         )
-        try:
-            tt = await self.db.get_task_type_by_code(task_type_code)
-        except Exception:
-            tt = None
         if tt and bool(getattr(tt, "window_pool_enabled", False)):
             async with self._window_pool_lock:
                 pool_ids = list(self._window_pool_targets.get(task_type_code, set()))
@@ -1811,6 +1920,10 @@ class TaskService:
             payload = self._task_payloads.get(task_id) or {}
             prompt = str(payload.get("prompt") or "").strip()
             target_url = str(payload.get("sora_url") or "https://sora.chatgpt.com/drafts").strip()
+            is_veo_image_task = (
+                picked.create_task_handler == "veo_workflow"
+                and _veo_resolve_n_frames(payload) == 1
+            )
             try:
                 refresh_timeout_seconds = max(1.0, float(payload.get("sora_balance_refresh_timeout_seconds") or 60.0))
             except Exception:
@@ -1975,7 +2088,7 @@ class TaskService:
                 except Exception:
                     pass
 
-                if picked.create_task_handler == "veo_workflow":
+                if picked.create_task_handler == "veo_workflow" and not is_veo_image_task:
                     await refresh_veo_balance_via_extension(
                         db=self.db,
                         picked=picked,
@@ -2022,12 +2135,21 @@ class TaskService:
                 # 清空一下result中的nf_check，避免敏感信息泄露
                 if isinstance(result, dict):
                     result["nf_check"] = None
+                # `*-1080p` 模型：生成成功后串行做一次超分。窗口名额会一并被占用到超分
+                # 结束，这正好当作窗口冷却；失败不影响任务成功。
+                if picked.create_task_handler == "veo_workflow":
+                    result = await _maybe_upscale_result_to_1080p(
+                        result,
+                        payload=payload,
+                        task_id=task_id,
+                        progress_cb=progress_cb,
+                    )
                 await self.db.update_task(task_id, status="completed", progress=100, result=result, set_completed=True)
                 #await self.db.consume_mapping_quota(picked.mapping_id, amount=1)
                 await self.db.mark_mapping_success(picked.mapping_id)
                 logger.info("task completed: %s", task_id)
             except Exception as e:
-                if picked.create_task_handler == "veo_workflow":
+                if picked.create_task_handler == "veo_workflow" and not is_veo_image_task:
                     await refresh_veo_balance_via_extension(
                         db=self.db,
                         picked=picked,

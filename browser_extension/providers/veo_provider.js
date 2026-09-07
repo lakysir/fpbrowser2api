@@ -1,4 +1,4 @@
-import { ensureTab as ensureGenericTab, fetchJson, compactErrorResponse, simulateHumanActivity, uploadDataUrlToAliyunOss } from "./common.js";
+import { ensureTab as ensureGenericTab, fetchJson, compactErrorResponse, simulateHumanActivity, uploadDataUrlToR2 } from "./common.js";
 
 const URLS = {
   credits: "https://aisandbox-pa.googleapis.com/v1/credits",
@@ -12,7 +12,6 @@ const URLS = {
   uploadVideoStart: "https://labs.google/fx/api/upload-video?action=start",
   uploadVideoChunk: "https://labs.google/fx/api/upload-video?action=upload",
   updateVideoOffset: "https://labs.google/fx/api/trpc/videoFx.updateVideoOffset",
-  mediaUrlRedirect: "https://labs.google/fx/api/trpc/media.getMediaUrlRedirect",
   upsampleImage: "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage",
   workflows: "https://aisandbox-pa.googleapis.com/v1/flowWorkflows"
 };
@@ -97,7 +96,7 @@ async function waitForVeoHumanActivityIdle(runtime) {
 
 async function runVeoHumanActivityAction(msg, runtime) {
   const p = msg.payload || {};
-  const projectPage = p.project_page || p.target_url || p.veo_url || "https://labs.google/fx";
+  const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || p.veo_url || "https://flow.google.com/");
   if (activeVeoTaskRuns.size > 0) {
     try {
       await runtime.progress(100, {
@@ -245,7 +244,38 @@ function archiveEnabled(p, key = "archive_workflow") {
 function isVeoFlowPageUrl(raw) {
   try {
     const u = new URL(String(raw || ""));
-    return u.protocol === "https:" && u.hostname === "labs.google" && u.pathname.startsWith("/fx/tools/flow");
+    return u.protocol === "https:" && (
+      (u.hostname === "labs.google" && u.pathname.startsWith("/fx/tools/flow")) ||
+      u.hostname === "flow.google.com"
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+// Flow migrated from labs.google. Normalize user/task supplied workspace URLs
+// before opening or refreshing a tab, while leaving API endpoints untouched.
+function normalizeVeoProjectPageUrl(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "https://flow.google.com/";
+  try {
+    const u = new URL(value);
+    if (u.protocol !== "https:") return value;
+    if (u.hostname === "labs.google") {
+      const projectMatch = u.pathname.match(/^\/fx\/tools\/flow\/project\/([^/?#]+)\/?$/i);
+      if (projectMatch) return `https://flow.google.com/project/${encodeURIComponent(decodeURIComponent(projectMatch[1]))}`;
+      if (/^\/fx\/?$/i.test(u.pathname) || /^\/fx\/tools\/flow\/?$/i.test(u.pathname)) return "https://flow.google.com/";
+    }
+    return value;
+  } catch (_) {
+    return value;
+  }
+}
+
+function isVeoWorkspacePageUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:" && (u.hostname === "labs.google" || u.hostname === "flow.google.com");
   } catch (_) {
     return false;
   }
@@ -282,7 +312,7 @@ async function fetchVeoCurrentPageTask(msg, runtime) {
     url,
     title: String((tab && tab.title) || ""),
     is_flow_page: isVeoFlowPageUrl(url),
-    required_url_prefix: "https://labs.google/fx/tools/flow"
+    required_url_prefix: "https://flow.google.com/"
   };
 }
 
@@ -368,7 +398,7 @@ export async function dismissVeoChangelogModalIfPresent(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
     const url = String((tab && tab.url) || "");
-    if (!url.startsWith("https://labs.google/")) return { clicked: false, reason: "not_labs_google", url };
+    if (!isVeoWorkspacePageUrl(url)) return { clicked: false, reason: "not_veo_workspace", url };
     if (tab && tab.status !== "complete") await waitTabComplete(tabId, 15000);
   } catch (_) {}
   try {
@@ -377,8 +407,8 @@ export async function dismissVeoChangelogModalIfPresent(tabId) {
       world: "MAIN",
       func: async () => {
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-        if (location.protocol !== "https:" || location.hostname !== "labs.google") {
-          return { found: false, clicked: false, reason: "not_labs_google", url: String(location.href || "") };
+        if (location.protocol !== "https:" || (location.hostname !== "labs.google" && location.hostname !== "flow.google.com")) {
+          return { found: false, clicked: false, reason: "not_veo_workspace", url: String(location.href || "") };
         }
         const getText = () => String(document.body && document.body.innerText || "");
         const text = getText();
@@ -497,12 +527,19 @@ async function ensureAiStudioNewChatTab({ active = false, windowId = null } = {}
 }
 
 async function ensureVeoProjectTab(projectPage, { active = true, navigate = true, create = true } = {}) {
-  const targetUrl = projectPage || "https://labs.google/fx";
+  const targetUrl = normalizeVeoProjectPageUrl(projectPage || "https://flow.google.com/");
   const tabs = await chrome.tabs.query({});
   const exact = tabs.find(t => (t.url || "") === targetUrl);
-  const found = exact || tabs.find(t => (t.url || "").startsWith("https://labs.google/"));
+  const found = exact || tabs.find(t => isVeoWorkspacePageUrl(t.url));
   if (found && found.id) {
-    if (navigate && targetUrl && found.url !== targetUrl) {
+    // A Labs page may have migrated to flow.google.com. Reuse either host
+    // instead of navigating back to the requested Labs URL.
+    let targetHost = "";
+    let foundHost = "";
+    try { targetHost = new URL(targetUrl).hostname; } catch (_) {}
+    try { foundHost = new URL(found.url || "").hostname; } catch (_) {}
+    const shouldNavigate = navigate && targetUrl && found.url !== targetUrl && !(foundHost === "flow.google.com" && targetHost !== "flow.google.com");
+    if (shouldNavigate) {
       await withVeoTabOpLock(found.id, "ensure_project_tab_navigate", async () => {
         await chrome.tabs.update(found.id, { url: targetUrl, active });
         await waitTabComplete(found.id, 45000);
@@ -525,7 +562,7 @@ async function ensureVeoProjectTab(projectPage, { active = true, navigate = true
 }
 
 async function assertProjectPageAccessible(projectPage, runtime) {
-  const url = projectPage || "https://labs.google/fx";
+  const url = normalizeVeoProjectPageUrl(projectPage || "https://flow.google.com/");
   let resp = null;
   let text = "";
   try {
@@ -559,6 +596,7 @@ async function assertProjectPageAccessible(projectPage, runtime) {
 
 async function reloadProjectPage(progress, tabId, projectPage, runtime, options = {}) {
   return await withVeoTabOpLock(tabId, "reload_project_page", async () => {
+    projectPage = normalizeVeoProjectPageUrl(projectPage);
     if (options.skipActiveCheck !== true && await shouldSkipProjectPageRefresh(progress, runtime, "reload_project_page", projectPage)) return false;
     await runtime.progress(progress, { stage: "reload_project_page", url: projectPage });
     try {
@@ -597,10 +635,10 @@ async function clearLabsGoogleLocalStorageBeforeReload(progress, tabId, projectP
       world: "MAIN",
       func: () => {
         const currentUrl = String(location.href || "");
-        if (location.protocol !== "https:" || location.hostname !== "labs.google") {
+        if (location.protocol !== "https:" || (location.hostname !== "labs.google" && location.hostname !== "flow.google.com")) {
           return {
             cleared: false,
-            reason: "not_labs_google_page",
+            reason: "not_veo_workspace_page",
             url: currentUrl,
             before: null,
             after: null
@@ -728,74 +766,74 @@ async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = 
   throw lastErr || new Error(`pageFetchJson returned empty result; Request Method: ${reqMethod}; url=${url}; attempt=${lastAttempt || 0}/${maxAttempts}`);
 }
 
-async function getGeneratedVideoUrl(tabId, mediaName, attempts = 3) {
-  const name = String(mediaName || "").trim();
-  if (!name) throw new Error("VEO generated video media name is missing");
-
-  const redirectUrl = `${URLS.mediaUrlRedirect}?name=${encodeURIComponent(name)}`;
+async function getGeneratedVideoUrl(tabId, projectId, mediaName, attempts = 3) {
+  const project = String(projectId || "").trim().replace(/^projects\//, "");
+  if (!project) throw new Error("VEO generated video project id is missing");
+  const media = String(mediaName || "").trim();
+  if (!media) throw new Error("VEO generated video media name is missing");
   const maxAttempts = Math.max(1, Number.parseInt(attempts, 10) || 1);
   let lastErr = null;
+  // Give the backend time to expose the signed URL, then retry at a fixed
+  // interval when the project query still returns no media URL.
+  await sleep(5000);
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    let redirectListener = null;
-    let redirectTimer = null;
     try {
-      const finalUrlPromise = new Promise((resolve, reject) => {
-        redirectListener = details => {
-          const target = String(details && details.redirectUrl || "").trim();
-          if (target) resolve(target);
-        };
-        chrome.webRequest.onBeforeRedirect.addListener(
-          redirectListener,
-          { urls: [`${URLS.mediaUrlRedirect}*`], tabId: Number(tabId) },
-          []
-        );
-        redirectTimer = setTimeout(() => reject(new Error("redirect event timeout")), 15000);
-      });
-
-      await withVeoTabOpLock(tabId, "get_generated_video_url", async () => {
-        try {
-          const tab = await chrome.tabs.get(tabId);
-          if (tab && tab.status !== "complete") await waitTabComplete(tabId, 45000);
-        } catch (_) {}
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          world: "MAIN",
-          args: [redirectUrl],
-          func: async (url) => {
-            try {
-              // The extension webRequest listener captures the 307 Location.
-              // The page fetch itself may reject after the cross-origin redirect;
-              // that rejection is expected and does not affect the captured URL.
-              await fetch(url, {
-                method: "GET",
-                credentials: "include",
-                redirect: "manual",
-                cache: "no-store"
-              });
-            } catch (_) {}
-            return true;
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        args: [project, media],
+        func: async (projectId, mediaName) => {
+          const params = { fSid: null, atToken: null, bl: null };
+          for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
+            if (!params.fSid && typeof val === "string" && /^\d{15,20}$/.test(val)) params.fSid = val;
+            if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
+            if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
           }
-        });
+          if (!params.fSid || !params.bl) {
+            try {
+              const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
+              if (entries.length) {
+                const u = new URL(entries[entries.length - 1].name);
+                params.fSid ||= u.searchParams.get("f.sid");
+                params.bl ||= u.searchParams.get("bl");
+              }
+            } catch (_) {}
+          }
+          if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+          if (!params.fSid || !params.atToken) throw new Error("Flow 请求参数不可用，请刷新页面后重试");
+          const rpcids = "as29s";
+          const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + 22222;
+          const hl = document.documentElement.lang || "en";
+          const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
+          const payload = JSON.stringify([mediaName]);
+          const requestData = [[[rpcids, payload, null, "generic"]]];
+          const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" }, body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`, credentials: "include" });
+          const text = await response.text();
+          if (!response.ok) throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+          return text;
+        }
       });
-
-      const finalUrl = await finalUrlPromise;
-      let parsed = null;
-      try { parsed = new URL(finalUrl); } catch (_) {}
-      if (parsed && parsed.protocol === "https:" && parsed.hostname === "flow-content.google" && parsed.pathname.startsWith("/video/")) {
-        return finalUrl;
+      let decoded = String(result || "");
+      // batchexecute wraps the response payload in one or more JSON strings,
+      // so URL escapes may arrive with doubled backslashes. Normalize and
+      // decode repeatedly before applying the URL matcher.
+      for (let i = 0; i < 3; i++) {
+        const next = decoded
+          .replace(/\\\\/g, "\\")
+          .replace(/\\u([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+          .replace(/\\\//g, "/");
+        if (next === decoded) break;
+        decoded = next;
       }
-      throw new Error(`unexpected redirect response=${JSON.stringify(result || {}).slice(0, 500)}`);
+      const match = decoded.match(/https:\/\/flow-content\.google\/video\/[0-9a-f-]+\?[^\s"'\\\]]+/i);
+      if (match) return match[0].replace(/[),]+$/, "");
+      throw new Error(`as29s 响应中未找到视频地址: ${decoded.slice(0, 500)}`);
     } catch (e) {
       lastErr = e;
-      if (attempt + 1 < maxAttempts) await sleep(250 * (attempt + 1));
-    } finally {
-      if (redirectTimer) clearTimeout(redirectTimer);
-      if (redirectListener) {
-        try { chrome.webRequest.onBeforeRedirect.removeListener(redirectListener); } catch (_) {}
-      }
+      if (attempt + 1 < maxAttempts) await sleep(5000);
     }
   }
-  throw new Error(`VEO generated video URL redirect failed; media=${name}; error=${String((lastErr && lastErr.message) || lastErr || "unknown error").slice(0, 500)}`);
+  throw new Error(`VEO generated video URL query failed; project=${project}; error=${String((lastErr && lastErr.message) || lastErr || "unknown error").slice(0, 500)}`);
 }
 
 async function getAccessTokenFromPage(tabId) {
@@ -843,6 +881,9 @@ function cookieExpiresToIso(cookie) {
 function veoCookieUrl(targetUrl) {
   try {
     const u = new URL(targetUrl || "https://labs.google");
+    // Flow pages migrated to flow.google.com, but the NextAuth session cookie
+    // is still owned by labs.google and cannot be read through the new origin.
+    if (u.hostname === "flow.google.com") return "https://labs.google";
     if (!/(\.|^)labs\.google$/i.test(u.hostname)) return "https://labs.google";
     return `${u.origin}`;
   } catch (_) {
@@ -952,7 +993,7 @@ async function fetchVeoLongAccessTokenTask(msg, runtime) {
 
 async function fetchVeoShortAccessTokenTask(msg, runtime) {
   const p = msg.payload || {};
-  const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || "https://flow.google.com/");
   await runtime.progress(5, { stage: "short_access_token" });
   let shortInfo = null;
   try {
@@ -973,124 +1014,107 @@ async function fetchVeoShortAccessTokenTask(msg, runtime) {
 
 async function fetchVeoAccessTokensTask(msg, runtime) {
   const p = msg.payload || {};
-  const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || "https://flow.google.com/");
   const existingTabId = Number(p.tab_id || p.labs_tab_id || 0) || null;
-  const extSessionToken = cleanTokenValue(p.ext_session_token || p.expected_session_token || p.current_session_token);
-  const extShortAccessToken = cleanTokenValue(p.ext_short_access_token || p.short_access_token);
-  const extShortExpires = cleanTokenValue(p.ext_short_expires || p.short_expires) || null;
-  await runtime.progress(3, { stage: "long_access_token" });
-  const longInfo = await getLongAccessTokenFromCookies(projectPage);
-  const longSessionToken = cleanTokenValue(longInfo && longInfo.session_token);
-  if (!longSessionToken) throw new Error("VEO long session_token not found");
-
-  await runtime.progress(15, {
-    stage: "short_access_token",
-    session_token_matches_ext: !!(extSessionToken && longSessionToken === extSessionToken)
+  await runtime.progress(10, { stage: "read_at_token" });
+  const tabId = existingTabId || await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+  if (!tabId) throw new Error("VEO Flow tab unavailable");
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: () => {
+      let token = "";
+      if (window.WIZ_global_data) {
+        for (const value of Object.values(window.WIZ_global_data)) {
+          if (typeof value === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(value)) {
+            token = value;
+            break;
+          }
+        }
+      }
+      if (!token) return null;
+      const timestamp = Number(token.slice(token.lastIndexOf(":") + 1));
+      return {
+        token,
+        expires: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+      };
+    }
   });
-  let shortInfo = null;
-  let shortSource = "extension.fetch";
-
-  try {
-    shortInfo = await fetchShortAccessTokenByExtensionFetch(projectPage);
-  } catch (e) {
-    shortSource = "page.auth_session";
-    await runtime.progress(20, { stage: "short_access_token_page_fallback", error: String((e && e.message) || e || "").slice(0, 200) });
-    const tabId = existingTabId || await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
-    shortInfo = await getAccessTokenFromPage(tabId);
-  }
-  if (!shortInfo || !shortInfo.access_token) throw new Error("VEO short access_token not found");
-  await runtime.progress(100, { stage: "done", token_kind: "long_short" });
-
+  if (!result || !result.token) throw new Error("VEO at token not found; refresh the Flow page and retry");
+  await runtime.progress(100, { stage: "done", token_kind: "at" });
   return {
     type: "veo_access_tokens",
-    access_token: shortInfo && shortInfo.access_token ? shortInfo.access_token : null,
-    session_token: shortInfo && shortInfo.access_token ? shortInfo.access_token : null,
-    expires: shortInfo && shortInfo.expires ? shortInfo.expires : null,
-    cookie_name: longInfo.cookie_name || null,
-    cookie_parts: longInfo.cookie_parts || 1,
-    short_access_token: shortInfo && shortInfo.access_token ? shortInfo.access_token : null,
-    short_expires: shortInfo && shortInfo.expires ? shortInfo.expires : null,
-    email: shortInfo && shortInfo.email ? shortInfo.email : null,
-    source: "extension",
-    short_source: shortSource,
-    ext_session_token_matched: !!(extSessionToken && longSessionToken === extSessionToken),
-    ext_session_token_changed: !!(extSessionToken && longSessionToken !== extSessionToken)
+    access_token: result.token,
+    session_token: result.token,
+    expires: result.expires,
+    short_access_token: result.token,
+    short_expires: result.expires,
+    source: "extension.wiz_global_data"
   };
 }
 
-function veoTrpcCreateProjectUrl(targetUrl) {
-  try {
-    const u = new URL(String(targetUrl || "https://labs.google/fx"));
-    return `${u.origin}/fx/api/trpc/project.createProject`;
-  } catch (_) {
-    return "https://labs.google/fx/api/trpc/project.createProject";
-  }
+async function runVeoFlowProjectRpc(tabId, operation, projectId, projectName) {
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: async (operation, projectId, projectName) => {
+      const params = { fSid: null, atToken: null, bl: null };
+      for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
+        if (!params.fSid && typeof val === "string" && /^\d{15,20}$/.test(val)) params.fSid = val;
+        if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
+        if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+      }
+      if (!params.fSid || !params.bl) {
+        try {
+          const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
+          if (entries.length) {
+            const u = new URL(entries[entries.length - 1].name);
+            if (!params.fSid) params.fSid = u.searchParams.get("f.sid");
+            if (!params.bl) params.bl = u.searchParams.get("bl");
+          }
+        } catch (_) {}
+      }
+      if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+      if (!params.fSid) throw new Error("无法获取 f.sid（会话ID），请刷新页面后重试");
+      if (!params.atToken) throw new Error("无法获取认证token，请刷新页面后重试");
+      const rpcids = operation === "create" ? "jHPbke" : "QI2zvc";
+      const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + 22222;
+      const hl = document.documentElement.lang || "en";
+      const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=%2F&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
+      const payload = operation === "create" ? JSON.stringify(["projects/*", [null, [projectName]], [null, 22]]) : JSON.stringify([projectId]);
+      const requestData = [[[rpcids, payload, null, "generic"]]];
+      const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" }, body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`, credentials: "include" });
+      const responseText = await response.text();
+      if (!response.ok) throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+      return { status: response.status, responseText };
+    }, args: [operation, projectId, projectName]
+  });
+  if (!result) throw new Error("Flow 项目请求未返回结果");
+  return result;
 }
 
-function veoTrpcDeleteProjectUrl() {
-  return "https://labs.google/fx/api/trpc/project.deleteProject";
-}
-
-function parseVeoCreateProjectResponse(obj) {
-  if (obj == null) return "";
-  let cur = obj;
-  if (Array.isArray(cur) && cur.length) cur = cur[0];
-  if (!cur || typeof cur !== "object") return "";
-  const dig = (d, keys) => {
-    let x = d;
-    for (const k of keys) {
-      if (!x || typeof x !== "object") return null;
-      x = x[k];
-    }
-    return x;
-  };
-  for (const candidate of [
-    dig(cur, ["result", "data", "json", "result"]),
-    dig(cur, ["result", "data", "json"]),
-    cur
-  ]) {
-    if (candidate && typeof candidate === "object") {
-      const pid = candidate.projectId || candidate.project_id;
-      if (pid) return String(pid).trim();
-    }
-  }
-  const seen = new Set();
-  const walk = (x, depth = 0) => {
-    if (!x || typeof x !== "object" || depth > 8 || seen.has(x)) return "";
-    seen.add(x);
-    const pid = x.projectId || x.project_id;
-    if (pid) return String(pid).trim();
-    for (const v of Object.values(x)) {
-      const got = walk(v, depth + 1);
-      if (got) return got;
-    }
-    return "";
-  };
-  const nested = walk(cur);
-  if (nested) return nested;
-  return "";
+function extractVeoProjectUuid(responseText) {
+  const matches = String(responseText || "").match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi);
+  return matches && matches.length ? matches[0] : "";
 }
 
 async function createVeoFlowProjectTask(msg, runtime) {
   const p = msg.payload || {};
-  const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
-  const title = String(p.title || p.project_title || p.projectTitle || "").trim();
-  const toolName = String(p.tool_name || p.toolName || "PINHOLE").trim() || "PINHOLE";
+  const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || "https://flow.google.com/");
+  const title = String(p.title || p.project_title || p.projectTitle || "").trim() || (() => {
+    const now = new Date();
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${months[now.getMonth()]} ${String(now.getDate()).padStart(2, "0")} - ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  })();
   if (!title) throw new Error("项目标题不能为空");
 
   await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
   const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
-  await runtime.progress(10, { stage: "create_flow_project", title, tool_name: toolName });
-  const tx = await pageFetchJson(tabId, veoTrpcCreateProjectUrl(projectPage), {
-    method: "POST",
-    headers: { "Accept": "application/json", "Content-Type": "application/json" },
-    body: { json: { projectTitle: title, toolName } },
-    attempts: 3
-  });
-  if (tx.status >= 400) throw new Error(`createProject 失败：HTTP ${tx.status} ${String(tx.text || "").slice(0, 500)}`);
-  const projectId = parseVeoCreateProjectResponse(tx.json);
-  if (!projectId) throw new Error(`createProject 响应无效：${String(tx.text || JSON.stringify(tx.json || null)).slice(0, 400)}`);
-  const projectUrl = `https://labs.google/fx/tools/flow/project/${encodeURIComponent(projectId)}`;
+  await runtime.progress(10, { stage: "create_flow_project", title });
+  const tx = await runVeoFlowProjectRpc(tabId, "create", "", title);
+  if (tx.status >= 400) throw new Error(`createProject 失败：HTTP ${tx.status} ${String(tx.responseText || "").slice(0, 500)}`);
+  const projectId = extractVeoProjectUuid(tx.responseText);
+  if (!projectId) throw new Error(`createProject 响应无效：${String(tx.responseText || "").slice(0, 400)}`);
+  const projectUrl = `https://flow.google.com/project/${encodeURIComponent(projectId)}`;
   let navigated = false;
   try {
     await chrome.tabs.update(tabId, { url: projectUrl, active: true });
@@ -1107,33 +1131,29 @@ async function createVeoFlowProjectTask(msg, runtime) {
     project_url: projectUrl,
     navigated,
     status: tx.status,
-    response: tx.json || null
+    response: tx.responseText
   };
 }
 
 async function deleteVeoFlowProjectTask(msg, runtime) {
   const p = msg.payload || {};
-  const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || "https://flow.google.com/");
   const projectId = String(p.project_id || p.projectId || p.flow_project_id || "").trim();
   if (!projectId) throw new Error("project_id 不能为空");
 
   await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
   const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
   await runtime.progress(10, { stage: "delete_flow_project", project_id: projectId });
-  const tx = await pageFetchJson(tabId, veoTrpcDeleteProjectUrl(), {
-    method: "POST",
-    headers: { "Accept": "application/json", "Content-Type": "application/json" },
-    body: { json: { projectToDeleteId: projectId } },
-    attempts: 3
-  });
-  if (tx.status >= 400) throw new Error(`deleteProject 失败：HTTP ${tx.status} ${String(tx.text || "").slice(0, 500)}`);
+  const normalizedProjectId = projectId.startsWith("projects/") ? projectId : `projects/${projectId}`;
+  const tx = await runVeoFlowProjectRpc(tabId, "delete", normalizedProjectId, "");
+  if (tx.status >= 400) throw new Error(`deleteProject 失败：HTTP ${tx.status} ${String(tx.responseText || "").slice(0, 500)}`);
   await runtime.progress(100, { stage: "done", project_id: projectId });
   return {
     type: "veo_flow_project_delete",
     success: true,
-    project_id: projectId,
+    project_id: normalizedProjectId,
     status: tx.status,
-    response: tx.json || null
+    response: tx.responseText
   };
 }
 
@@ -1190,11 +1210,26 @@ async function fetchNextUpdateCooldown() {
 
 export async function refreshVeoBalanceTask(msg, runtime) {
   const p = msg.payload || {};
-  const projectPage = p.project_page || "https://labs.google/fx";
+  const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || "https://flow.google.com/");
+  let projectId = String(p.project_id || p.projectId || p.flow_project_id || "").trim().replace(/^projects\//, "");
+  if (!projectId) {
+    try {
+      const match = new URL(projectPage).pathname.match(/^\/project\/([^/?#]+)/i);
+      if (match) projectId = decodeURIComponent(match[1]);
+    } catch (_) {}
+  }
+  if (!projectId) {
+    try {
+      const stored = await chrome.storage.local.get(["veo_pending_project_id"]);
+      projectId = String(stored && stored.veo_pending_project_id || "").trim().replace(/^projects\//, "");
+    } catch (_) {}
+  }
+  if (!projectId) throw new Error("缺少 project_id，无法读取 VEO 余额");
+  const balancePage = `https://flow.google.com/project/${encodeURIComponent(projectId)}`;
   const otherActiveTasks = countOtherActiveVeoTaskRuns(runtime);
   const avoidPageMutation = otherActiveTasks > 0;
-  await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
-  const tabId = await ensureVeoProjectTab(projectPage, {
+  await runtime.progress(2, { stage: "ensure_tab", url: balancePage });
+  const tabId = await ensureVeoProjectTab(balancePage, {
     navigate: !avoidPageMutation,
     active: !avoidPageMutation,
     create: !avoidPageMutation
@@ -1210,19 +1245,9 @@ export async function refreshVeoBalanceTask(msg, runtime) {
       });
     } catch (_) {}
   }
-  const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : (tabId ? await getAccessTokenFromPage(tabId) : {});
-  const at = tokenInfo.access_token;
-  if (!at) throw new Error("缺少 access_token，无法读取 VEO 余额");
+  if (!tabId) throw new Error("VEO balance project tab is unavailable");
   await runtime.progress(20, { stage: "credits" });
-  // 余额接口只依赖 Bearer access_token；优先用扩展自身 fetch，避免在页面 MAIN world
-  // executeScript 偶发返回空 result 导致余额刷新失败。仍属于浏览器插件侧读取，不走 CDP。
-  let tx = await fetchJson(URLS.credits, { method: "GET", headers: authHeaders(at) });
-  if ((!tx || !tx.status) && tabId) {
-    tx = await pageFetchJson(tabId, URLS.credits, { method: "GET", headers: authHeaders(at) });
-  }
-  if (!tx || !tx.status) throw new Error("VEO credits fetch returned empty result");
-  if (tx.status >= 400) throw new Error(`查询 credits 失败: ${compactErrorResponse(tx)}`);
-  const info = normalizeCreditsPayload(tx.json);
+  const info = await fetchVeoBalanceByBatchExecute(tabId, projectId);
   if (p.fetch_cooldown) {
     await runtime.progress(60, { stage: "next_update" });
     const cu = await fetchNextUpdateCooldown();
@@ -1236,7 +1261,7 @@ export async function refreshVeoBalanceTask(msg, runtime) {
           other_active_veo_tasks: otherActiveTasks
         });
       } else {
-        await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+        await ensureVeoProjectTab(balancePage, { navigate: true, active: true });
       }
     } catch (_) {}
   }
@@ -1863,81 +1888,104 @@ function normalizeDownloadedImageMime(declaredMime, url, bytes) {
   return guessImageMimeFromUrl(url) || "image/jpeg";
 }
 
-async function cleanupProjectWorkflowsBeforeRun(tabId, at, projectId, runtime) {
-  const pid = String(projectId || "").trim();
+async function cleanupProjectWorkflowsBeforeRun(tabId, _at, projectId, runtime) {
+  const pid = String(projectId || "").trim().replace(/^projects\//, "");
   if (!pid) return { skipped: true, reason: "missing_project_id" };
   const report = async (progress, data) => {
     try { await runtime.progress(progress, data); } catch (_) {}
   };
-  const listUrl = "https://labs.google/fx/api/trpc/flow.projectInitialData?input=" +
-    encodeURIComponent(JSON.stringify({ json: { projectId: pid } }));
   try {
-    await report(6, { stage: "cleanup_project_workflows", project_id: pid });
-    const listTx = await pageFetchJson(tabId, listUrl, {
-      method: "GET",
-      headers: { "content-type": "application/json" },
-      attempts: 2,
-      timeoutMs: 45000
-    });
-    if (listTx.status >= 400) throw new Error(`VEO cleanup workflow list failed: ${compactErrorResponse(listTx)}`);
-    const workflows = listTx.json?.result?.data?.json?.projectContents?.workflows || [];
-    const toDelete = Array.isArray(workflows)
-      ? workflows.filter(w => w && !(w.metadata && w.metadata.archived))
-      : [];
-    const results = { total: Array.isArray(workflows) ? workflows.length : 0, archived: 0, errors: [] };
-    await report(6, {
-      stage: "cleanup_project_workflows_listed",
-      project_id: pid,
-      total: results.total,
-      to_delete_count: toDelete.length
-    });
-    for (let i = 0; i < toDelete.length; i++) {
-      const w = toDelete[i];
-      const workflowName = String(w.name || w.workflowId || w.id || "").trim();
-      if (!workflowName) {
-        results.errors.push({ index: i, error: "missing workflow name" });
-        continue;
-      }
-      try {
-        const body = JSON.stringify({
-          workflow: {
-            name: workflowName,
-            projectId: pid,
-            metadata: { archived: true }
-          },
-          updateMask: "metadata.archived"
-        });
-        const patchTx = await pageFetchJson(tabId, flowWorkflowUrl(workflowName), {
-          method: "PATCH",
-          headers: {
-            "Authorization": `Bearer ${at}`,
-            "Content-Type": "text/plain;charset=UTF-8",
-            "Origin": "https://labs.google",
-            "Referer": "https://labs.google/"
-          },
-          body,
-          attempts: 1,
-          timeoutMs: 45000
-        });
-        if (patchTx.status < 400 && patchTx.json?.metadata?.archived === true) {
-          results.archived++;
-        } else {
-          results.errors.push({
-            id: workflowName,
-            status: patchTx.status,
-            body: String(patchTx.text || JSON.stringify(patchTx.json || null)).slice(0, 200)
+    await report(6, { stage: "cleanup_project_media", project_id: pid });
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      args: [pid, 500],
+      func: async (projectId, delayMs) => {
+        const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+        const getStableParams = () => {
+          const params = { fSid: null, atToken: null, bl: null };
+          for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
+            if (!params.fSid && typeof val === "string" && /^-?\d{15,20}$/.test(val)) params.fSid = val;
+            if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
+            if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+          }
+          if (!params.fSid || !params.bl) {
+            try {
+              const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
+              if (entries.length) {
+                const url = new URL(entries[entries.length - 1].name);
+                params.fSid ||= url.searchParams.get("f.sid");
+                params.bl ||= url.searchParams.get("bl");
+              }
+            } catch (_) {}
+          }
+          if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+          return params;
+        };
+        const params = getStableParams();
+        if (!params.fSid || !params.atToken) throw new Error("Flow media cleanup parameters are unavailable; refresh the page and retry");
+        const requestRpc = async (rpcids, payload) => {
+          const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + Math.floor(Math.random() * 100000);
+          const hl = document.documentElement.lang || "en";
+          const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
+          const requestData = [[[rpcids, payload, null, "generic"]]];
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" },
+            body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`,
+            credentials: "include"
           });
+          const responseText = await response.text();
+          if (!response.ok) throw new Error(`${rpcids} request failed: ${response.status} ${response.statusText}`);
+          return responseText;
+        };
+        const listText = await requestRpc("Zzl0ze", JSON.stringify([`projects/${projectId}`, null, null, null, [0]]));
+        const mediaItems = [];
+        for (const line of listText.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
+          if (!line.startsWith("[[")) continue;
+          try {
+            const chunk = JSON.parse(line);
+            const rpc = Array.isArray(chunk) && chunk.find(item => Array.isArray(item) && item[0] === "wrb.fr" && item[1] === "Zzl0ze");
+            if (!rpc || typeof rpc[2] !== "string") continue;
+            const payload = JSON.parse(rpc[2]);
+            const items = Array.isArray(payload && payload[1]) ? payload[1] : [];
+            for (const item of items) {
+              if (!Array.isArray(item) || !item[0] || !Array.isArray(item[3])) continue;
+              mediaItems.push({
+                id: String(item[0]),
+                filename: String(item[3][0] || "unknown"),
+                isArchived: item[3][2] === true,
+                projectId: String(item[4] || projectId)
+              });
+            }
+          } catch (_) {}
         }
-      } catch (e) {
-        results.errors.push({ id: workflowName, error: String((e && e.message) || e || "").slice(0, 300) });
+        const pending = mediaItems.filter(item => !item.isArchived);
+        const results = { total: mediaItems.length, to_archive_count: pending.length, archived: 0, errors: [] };
+        for (let i = 0; i < pending.length; i++) {
+          const item = pending[i];
+          try {
+            const archivePayload = JSON.stringify([[[item.id, null, null, [null, null, 1], projectId]], [["metadata.archived"]]]);
+            const archiveText = await requestRpc("pGCYOe", archivePayload);
+            if (!archiveText.includes('"pGCYOe"') && !archiveText.includes("wrb.fr")) {
+              throw new Error("archive response did not contain pGCYOe result");
+            }
+            results.archived++;
+          } catch (e) {
+            results.errors.push({ id: item.id, filename: item.filename, error: String((e && e.message) || e || "").slice(0, 300) });
+          }
+          if (i < pending.length - 1) await sleep(delayMs);
+        }
+        return results;
       }
-      await sleep(300);
-    }
+    });
+    if (!result) throw new Error("VEO cleanup media request returned empty result");
+    const results = result;
     await report(7, {
-      stage: results.errors.length ? "cleanup_project_workflows_partial_failed" : "cleanup_project_workflows_done",
+      stage: results.errors.length ? "cleanup_project_media_partial_failed" : "cleanup_project_media_done",
       project_id: pid,
       total: results.total,
-      to_delete_count: toDelete.length,
+      to_archive_count: results.to_archive_count,
       archived: results.archived,
       errors: results.errors.slice(0, 5)
     });
@@ -2104,9 +2152,16 @@ function normalizeImageUpsampleTarget(p) {
   return { label: "2K", targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_2K" };
 }
 
-function isAiStudio4kImageRequest(p) {
-  const target = normalizeImageUpsampleTarget(p);
-  if (target.label === "4K") return true;
+function normalizeAiStudioImageResolution(p) {
+  const rawTarget = String(
+    p.extension_image_upsample_target_resolution ||
+    p.targetResolution ||
+    p.target_resolution ||
+    ""
+  ).trim().toUpperCase();
+  if (rawTarget === "UPSAMPLE_IMAGE_RESOLUTION_4K") return "4K";
+  if (rawTarget === "UPSAMPLE_IMAGE_RESOLUTION_2K") return "2K";
+
   const raw = String(
     p.extension_image_resolution_label ||
     p.resolution ||
@@ -2114,7 +2169,80 @@ function isAiStudio4kImageRequest(p) {
     p.veo_image_resolution ||
     ""
   ).trim().toLowerCase().replace(/\s+/g, "");
-  return raw === "4k" || raw === "4096" || raw === "3840" || raw === "4k_output" || raw === "uhd_4k";
+  if (["4k", "4096", "3840", "4k_output", "uhd_4k"].includes(raw)) return "4K";
+  if (["2k", "2048", "2k_output", "uhd_2k"].includes(raw)) return "2K";
+  return "1K";
+}
+
+function parseVeoBalanceBatchResponse(responseText) {
+  const lines = String(responseText || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (!line.startsWith("[[")) continue;
+    let chunk = null;
+    try { chunk = JSON.parse(line); } catch (_) { continue; }
+    if (!Array.isArray(chunk)) continue;
+    const rpc = chunk.find(item => Array.isArray(item) && item[0] === "wrb.fr" && item[1] === "nzlxg");
+    if (!rpc || typeof rpc[2] !== "string") continue;
+    let payload = null;
+    try { payload = JSON.parse(rpc[2]); } catch (_) { continue; }
+    const credits = Number.parseInt(Array.isArray(payload) ? payload[0] : NaN, 10);
+    const membershipLevel = Number.parseInt(Array.isArray(payload) ? payload[1] : NaN, 10);
+    if (Number.isFinite(credits)) {
+      return {
+        credits,
+        user_paygate_tier: Number.isFinite(membershipLevel) ? String(membershipLevel) : null,
+        membership_level: Number.isFinite(membershipLevel) ? membershipLevel : null,
+        raw: payload
+      };
+    }
+  }
+  throw new Error(`VEO balance response is invalid: ${String(responseText || "").slice(0, 500)}`);
+}
+
+async function fetchVeoBalanceByBatchExecute(tabId, projectId) {
+  const project = String(projectId || "").trim().replace(/^projects\//, "");
+  if (!project) throw new Error("VEO balance project id is missing");
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [project],
+    func: async (projectId) => {
+      const params = { fSid: null, atToken: null, bl: null };
+      for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
+        if (!params.fSid && typeof val === "string" && /^-?\d{15,20}$/.test(val)) params.fSid = val;
+        if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
+        if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+      }
+      if (!params.fSid || !params.bl) {
+        try {
+          const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
+          if (entries.length) {
+            const u = new URL(entries[entries.length - 1].name);
+            params.fSid ||= u.searchParams.get("f.sid");
+            params.bl ||= u.searchParams.get("bl");
+          }
+        } catch (_) {}
+      }
+      if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+      if (!params.fSid || !params.atToken) throw new Error("Flow balance request parameters are unavailable; refresh the page and retry");
+      const rpcids = "nzlxg";
+      const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + 22222;
+      const hl = document.documentElement.lang || "en";
+      const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
+      const requestData = [[[rpcids, "[]", null, "generic"]]];
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" },
+        body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`,
+        credentials: "include"
+      });
+      const responseText = await response.text();
+      if (!response.ok) throw new Error(`VEO balance request failed: ${response.status} ${response.statusText}`);
+      return responseText;
+    }
+  });
+  if (!result) throw new Error("VEO balance request returned empty result");
+  return parseVeoBalanceBatchResponse(result);
 }
 
 function mapAiStudioImageAspectRatio(p) {
@@ -2255,6 +2383,7 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
   const prompt = String(p.prompt || "");
   const modelName = mapAiStudioImageModelName(p);
   const aspectRatio = mapAiStudioImageAspectRatio(p);
+  const resolution = normalizeAiStudioImageResolution(p);
   const referenceImages = await collectAiStudioReferenceImages(p, runtime);
   const tabId = aiStudioTabId || await ensureAiStudioNewChatTab({ active: true });
   if (!tabId) throw new Error("AI Studio new_chat tab not found");
@@ -2269,10 +2398,11 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
   }
   await sleep(1200);
   await runtime.progress(10, {
-    stage: "submit_image_task_aistudio_4k",
+    stage: "submit_image_task_aistudio",
     workflow_kind: "image",
     model_name: modelName,
     aspect_ratio: aspectRatio,
+    resolution,
     i2i_image_count: referenceImages.length,
     google_login_wait: googleLoginWait
   });
@@ -2280,8 +2410,8 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
     const frames = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    args: [modelName, prompt, aspectRatio, referenceImages],
-    func: async (model_name, prompt, aspectRatio, referenceImages) => {
+    args: [modelName, prompt, aspectRatio, resolution, referenceImages],
+    func: async (model_name, prompt, aspectRatio, resolution, referenceImages) => {
       const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
       let originalOpen = null;
       let originalSend = null;
@@ -2290,7 +2420,6 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
         if (location.hostname !== "aistudio.google.com" || !location.pathname.startsWith("/prompts/new_chat")) {
           return { ok: false, error: "Expected AI Studio new_chat page", url: String(location.href || "") };
         }
-        const resolution = "4K";
         let capturedPayload = null;
         let capturedHeaders = null;
         let capturedUrl = null;
@@ -2640,7 +2769,7 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
     if (injected && injected.responseText && injected.responseText !== injected.details) {
       parts.push(`full_response=${String(injected.responseText).slice(0, 4000)}`);
     }
-    throw new Error(`AI Studio 4K image generation failed: ${(parts.join("; ") || "empty executeScript result").slice(0, 4500)}`);
+    throw new Error(`AI Studio ${resolution} image generation failed: ${(parts.join("; ") || "empty executeScript result").slice(0, 4500)}`);
   }
   const images = injected.result && Array.isArray(injected.result.images) ? injected.result.images : [];
   const selectedImageIndex = images.length > 0 ? images.length - 1 : -1;
@@ -2651,32 +2780,32 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
     const details = [];
     if (generationErrors.length) details.push(`generation_error=${generationErrors.join(" | ")}`);
     if (responsePreview) details.push(`response=${responsePreview}`);
-    throw new Error(`AI Studio 4K image generation returned no image${details.length ? `; ${details.join("; ")}` : ""}`);
+    throw new Error(`AI Studio ${resolution} image generation returned no image${details.length ? `; ${details.join("; ")}` : ""}`);
   }
   let shareUrl = selectedImage.dataUrl;
-  let ossUploads = [];
-  const ossCfg = p.oss_upload || p.extension_oss_upload || null;
-  if (ossCfg) {
-    const ossStartedAt = Date.now();
+  let r2Uploads = [];
+  const r2Cfg = p.r2_upload || p.extension_r2_upload || null;
+  if (r2Cfg) {
+    const r2StartedAt = Date.now();
     await runtime.progress(92, {
-      stage: "oss_upload",
-      target_resolution: "4K",
-      timeout_ms: Number((ossCfg && (ossCfg.timeout_ms || ossCfg.timeoutMs || ossCfg.upload_timeout_ms || ossCfg.uploadTimeoutMs)) || 60000) || 60000,
-      attempts: Number((ossCfg && (ossCfg.attempts || ossCfg.upload_attempts || ossCfg.uploadAttempts)) || 3) || 3
+      stage: "r2_upload",
+      target_resolution: resolution,
+      timeout_ms: Number((r2Cfg && (r2Cfg.timeout_ms || r2Cfg.timeoutMs || r2Cfg.upload_timeout_ms || r2Cfg.uploadTimeoutMs)) || 60000) || 60000,
+      attempts: Number((r2Cfg && (r2Cfg.attempts || r2Cfg.upload_attempts || r2Cfg.uploadAttempts)) || 3) || 3
     });
-    const uploaded = await uploadDataUrlToAliyunOss(ossCfg, shareUrl, {
-      objectKeyPrefix: (ossCfg && (ossCfg.object_key_prefix || ossCfg.objectKeyPrefix)) || "veo_workflow/image/aistudio/4k",
+    const uploaded = await uploadDataUrlToR2(r2Cfg, shareUrl, {
+      objectKeyPrefix: (r2Cfg && (r2Cfg.object_key_prefix || r2Cfg.objectKeyPrefix)) || `veo_workflow/image/aistudio/${resolution.toLowerCase()}`,
       taskId: p._bridge_task_id || p.task_id || "",
-      resolution: "4K",
+      resolution,
       contentType: selectedImage.mimeType || "image/png"
     });
-    ossUploads = [uploaded];
+    r2Uploads = [uploaded];
     shareUrl = uploaded.url;
     await runtime.progress(93, {
-      stage: "oss_upload_done",
-      target_resolution: "4K",
+      stage: "r2_upload_done",
+      target_resolution: resolution,
       size: uploaded.size || 0,
-      duration_ms: uploaded.duration_ms || (Date.now() - ossStartedAt),
+      duration_ms: uploaded.duration_ms || (Date.now() - r2StartedAt),
       object_key: uploaded.object_key
     });
   }
@@ -2688,19 +2817,19 @@ async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
   });
   return {
     type: "veo_workflow_image",
-    message: "AI Studio 4K image generation completed",
+    message: `AI Studio ${resolution} image generation completed`,
     workflow_kind: "image",
     share_url: shareUrl,
     image_url: shareUrl,
     model_name: p.extension_image_model_name || "NARWHAL",
     ai_studio_model_name: modelName,
     aspect_ratio: p.extension_image_aspect_ratio || aspectRatio,
-    resolution: "4K",
+    resolution,
     upsample_ok: false,
     upsample_error: undefined,
-    oss_uploads: ossUploads,
-    upsample_url: (ossUploads[0] && ossUploads[0].url) || undefined,
-    upsample_oss_object_key: (ossUploads[0] && ossUploads[0].object_key) || undefined,
+    r2_uploads: r2Uploads,
+    upsample_url: (r2Uploads[0] && r2Uploads[0].url) || undefined,
+    upsample_r2_object_key: (r2Uploads[0] && r2Uploads[0].object_key) || undefined,
     project_id: p.project_id,
     generated_media_id: "",
     generated_workflow_id: "",
@@ -2784,9 +2913,9 @@ async function upsampleImage(tabId, at, p, parsed, runtime) {
 }
 
 async function runImageWorkflow(tabId, p, at, runtime) {
-  if (isAiStudio4kImageRequest(p)) {
-    return await runAiStudio4kImageWorkflow(p._ai_studio_tab_id, p, runtime);
-  }
+  return await runAiStudio4kImageWorkflow(p._ai_studio_tab_id, p, runtime);
+  /* Legacy Flow image generation is intentionally kept below for rollback,
+     but all current 1K/2K/4K image requests use AI Studio. */
   const projectId = p.project_id;
   const prompt = p.prompt || "";
   const imageUrls = p.extension_image_reference_urls || [];
@@ -2873,43 +3002,43 @@ async function runImageWorkflow(tabId, p, at, runtime) {
   let resLabel = p.extension_image_resolution_label || "1K";
   let upsampleOk = false;
   let upsampleError = "";
-  let ossUploads = [];
+  let r2Uploads = [];
   if ((p.extension_image_want_upsample || p.extension_image_want_2k) && parsed.mediaName) {
     const up = await upsampleImage(tabId, at, p, parsed, runtime);
     if (up.encodedImage) {
       const dataUrl = `data:image/jpeg;base64,${up.encodedImage}`;
       upsampleOk = true;
       resLabel = up.resolutionLabel || resLabel;
-      const ossCfg = p.oss_upload || p.extension_oss_upload || null;
-      if (ossCfg) {
+      const r2Cfg = p.r2_upload || p.extension_r2_upload || null;
+      if (r2Cfg) {
         try {
-          const ossStartedAt = Date.now();
+          const r2StartedAt = Date.now();
           await runtime.progress(92, {
-            stage: "oss_upload",
+            stage: "r2_upload",
             target_resolution: resLabel,
             media_id: parsed.mediaName,
-            timeout_ms: Number((ossCfg && (ossCfg.timeout_ms || ossCfg.timeoutMs || ossCfg.upload_timeout_ms || ossCfg.uploadTimeoutMs)) || 60000) || 60000,
-            attempts: Number((ossCfg && (ossCfg.attempts || ossCfg.upload_attempts || ossCfg.uploadAttempts)) || 3) || 3
+            timeout_ms: Number((r2Cfg && (r2Cfg.timeout_ms || r2Cfg.timeoutMs || r2Cfg.upload_timeout_ms || r2Cfg.uploadTimeoutMs)) || 60000) || 60000,
+            attempts: Number((r2Cfg && (r2Cfg.attempts || r2Cfg.upload_attempts || r2Cfg.uploadAttempts)) || 3) || 3
           });
-          const uploaded = await uploadDataUrlToAliyunOss(ossCfg, dataUrl, {
-            objectKeyPrefix: (ossCfg && (ossCfg.object_key_prefix || ossCfg.objectKeyPrefix)) || `veo_workflow/image/upsample/${String(resLabel || "2K").toLowerCase()}`,
+          const uploaded = await uploadDataUrlToR2(r2Cfg, dataUrl, {
+            objectKeyPrefix: (r2Cfg && (r2Cfg.object_key_prefix || r2Cfg.objectKeyPrefix)) || `veo_workflow/image/upsample/${String(resLabel || "2K").toLowerCase()}`,
             taskId: p._bridge_task_id || p.task_id || "",
             resolution: resLabel,
             contentType: "image/jpeg"
           });
-          ossUploads = [uploaded];
+          r2Uploads = [uploaded];
           shareUrl = uploaded.url;
           await runtime.progress(93, {
-            stage: "oss_upload_done",
+            stage: "r2_upload_done",
             target_resolution: resLabel,
             media_id: parsed.mediaName,
             size: uploaded.size || 0,
-            duration_ms: uploaded.duration_ms || (Date.now() - ossStartedAt),
+            duration_ms: uploaded.duration_ms || (Date.now() - r2StartedAt),
             object_key: uploaded.object_key
           });
         } catch (e) {
-          upsampleError = `OSS?????${String((e && e.message) || e || "").slice(0, 300)}`;
-          if (ossCfg && ossCfg.required !== false) throw new Error(upsampleError);
+          upsampleError = `R2 upload failed: ${String((e && e.message) || e || "").slice(0, 300)}`;
+          if (r2Cfg && r2Cfg.required !== false) throw new Error(upsampleError);
           shareUrl = dataUrl;
         }
       } else {
@@ -2936,9 +3065,9 @@ async function runImageWorkflow(tabId, p, at, runtime) {
     resolution: resLabel,
     upsample_ok: upsampleOk,
     upsample_error: upsampleError || undefined,
-    upsample_url: (ossUploads[0] && ossUploads[0].url) || undefined,
-    upsample_oss_object_key: (ossUploads[0] && ossUploads[0].object_key) || undefined,
-    oss_uploads: ossUploads,
+    upsample_url: (r2Uploads[0] && r2Uploads[0].url) || undefined,
+    upsample_r2_object_key: (r2Uploads[0] && r2Uploads[0].object_key) || undefined,
+    r2_uploads: r2Uploads,
     project_id: projectId,
     generated_media_id: parsed.mediaName,
     generated_workflow_id: parsed.workflowId,
@@ -2991,7 +3120,8 @@ async function pollVideo(tabId, at, pollMedia, pollOperations, runtime, p) {
     }
     if (last.videoUrl) return last;
     if (/MEDIA_GENERATION_STATUS_SUCCESSFUL/i.test(String(last.status || ""))) {
-      const mediaName = String(((pollMedia || []).find(item => item && item.name) || {}).name || "").trim();
+      const mediaName = String(last.mediaName || ((pollMedia || []).find(item => item && item.name) || {}).name || "").trim();
+      const resultProjectId = String(last.projectId || p.project_id || "").trim();
       if (!mediaName) throw new Error("VEO video generation succeeded but poll media name is missing");
       urlFetchAttempts++;
       await runtime.progress(pct, {
@@ -3002,7 +3132,7 @@ async function pollVideo(tabId, at, pollMedia, pollOperations, runtime, p) {
         workflow_id: last.workflowId,
         media_name: mediaName
       });
-      last.videoUrl = await getGeneratedVideoUrl(tabId, mediaName);
+      last.videoUrl = await getGeneratedVideoUrl(tabId, resultProjectId, mediaName);
       last.mediaName ||= mediaName;
       return last;
     }
@@ -3014,7 +3144,32 @@ function stripI2vFl(modelKey) {
   return String(modelKey || "").replace("_fl_", "_").replace(/_fl$/, "");
 }
 
-async function runVideoWorkflow(tabId, p, at, runtime) {
+async function loadVeoInjectedVideoScript(tabId, fileName) {
+  const path = `providers/veo/${fileName.replace(/\.txt$/i, ".js")}`;
+  return path;
+}
+
+async function runInjectedVeoVideo(tabId, scriptPath, config) {
+  await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: [scriptPath] });
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: async (runnerConfig) => {
+      try {
+        const runner = globalThis.runGeneratedTest;
+        if (typeof runner !== "function") throw new Error("Injected script did not define runGeneratedTest(config)");
+        return await runner(runnerConfig || {});
+      } catch (error) {
+        return { ok: false, error: String(error && error.message || error), stack: error && error.stack };
+      }
+    },
+    args: [config]
+  });
+  if (!result) throw new Error("VEO injected script returned an empty result");
+  return result;
+}
+
+async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
   const projectId = p.project_id;
   const prompt = p.prompt || "";
   const mode = p.video_mode || "t2v";
@@ -3193,6 +3348,67 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   }
 }
 
+// New Flow browser-console implementation. The legacy REST implementation is
+// retained above for rollback only and is never selected by runVeoTask.
+async function runVideoWorkflow(tabId, p, at, runtime) {
+  const imageUrls = [
+    ...(Array.isArray(p.ingredients_urls) ? p.ingredients_urls : []),
+    ...(Array.isArray(p.i2v_urls) ? p.i2v_urls : [])
+  ]
+    .map(x => String(x || "").trim()).filter(Boolean);
+  const videoUrls = (Array.isArray(p.ingredients_video_urls) ? p.ingredients_video_urls :
+    (p.ingredients_video_url ? [p.ingredients_video_url] : []))
+    .map(x => String(x || "").trim()).filter(Boolean);
+  const mode = String(p.video_mode || "t2v").toLowerCase();
+
+  // Video + image editing is intentionally left as an explicit branch until
+  // the new console workflow for video inputs is available.
+  if (videoUrls.length) {
+    await runtime.progress(10, { stage: "video_image_branch_not_implemented", video_count: videoUrls.length, image_count: imageUrls.length });
+    throw new Error("VEO video+image generation is not implemented yet");
+  }
+
+  const aspect = String(p.extension_video_aspect_ratio || "VIDEO_ASPECT_RATIO_LANDSCAPE");
+  const aspectRatio = /PORTRAIT|9:16|VERTICAL/i.test(aspect) ? "9:16" : "16:9";
+  const prompt = String(p.prompt || "").trim();
+  if (!prompt) throw new Error("VEO video prompt is empty");
+  if (imageUrls.length > 9) throw new Error("VEO reference images support at most 9 images");
+
+  const useImages = imageUrls.length > 0 || mode === "r2v" || mode === "i2v";
+  const scriptName = useImages ? "image2video_injected.txt" : "text2video_injected.txt";
+  await runtime.progress(10, { stage: "load_injected_script", video_mode: useImages ? "r2v" : "t2v", image_count: imageUrls.length });
+  const scriptPath = await loadVeoInjectedVideoScript(tabId, scriptName);
+  const config = {
+    prompt,
+    project_id: String(p.project_id || ""),
+    aspectRatio,
+    referenceImageUrls: imageUrls.slice(0, 9),
+    maxWaitSeconds: Number(p.max_wait_seconds || p.timeout_seconds || 600),
+    pollIntervalSeconds: Number(p.poll_interval_seconds || 5),
+  };
+  await runtime.progress(15, { stage: "execute_injected_script", video_mode: useImages ? "r2v" : "t2v", image_count: imageUrls.length });
+  const result = await runInjectedVeoVideo(tabId, scriptPath, config);
+  if (!result.ok) throw new Error(String(result.error || "VEO injected video generation failed"));
+  const videoUrl = String(result.video_url || result.share_url || result.videoUrl || result.result?.videoUrl || "").trim();
+  if (!videoUrl) throw new Error("VEO injected video generation returned no video URL");
+  await runtime.progress(100, { stage: "done", video_url: videoUrl, video_mode: useImages ? "r2v" : "t2v" });
+  return {
+    type: "veo_workflow_video",
+    message: useImages ? "VEO 多图生视频完成" : "VEO 文生视频完成",
+    share_url: videoUrl,
+    video_url: videoUrl,
+    thumb_url: imageUrls[0] || "",
+    video_type: useImages ? "r2v" : "t2v",
+    model_key: p.extension_model_key || undefined,
+    aspect_ratio: p.extension_video_aspect_ratio || (aspectRatio === "9:16" ? "VIDEO_ASPECT_RATIO_PORTRAIT" : "VIDEO_ASPECT_RATIO_LANDSCAPE"),
+    project_id: String(p.project_id || ""),
+    generated_media_id: result.result?.mediaUUID || result.mediaUUID || undefined,
+    generated_workflow_id: result.result?.workflowId || result.workflow_id || undefined,
+    workflow_archived: false,
+    injected_result: result,
+  };
+}
+
 export async function runVeoTask(msg, runtime) {
   const p = msg.payload || {};
   const action = String(p.action || p.workflow_kind || "").trim().toLowerCase();
@@ -3205,7 +3421,7 @@ export async function runVeoTask(msg, runtime) {
     if (action === "current_page" || action === "get_current_page" || action === "current_url" || action === "get_current_url") {
       return await fetchVeoCurrentPageTask(msg, runtime);
     }
-    const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+    const projectPage = normalizeVeoProjectPageUrl(p.project_page || p.target_url || "https://flow.google.com/");
     await assertProjectPageAccessible(projectPage, runtime);
     const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
     let aiStudioTabId = null;
@@ -3217,6 +3433,16 @@ export async function runVeoTask(msg, runtime) {
     closeOtherTabsInSameWindowLater([tabId, aiStudioTabId].filter(Boolean), 5000);
 
     if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
+      const pendingProjectId = String(p.project_id || p.projectId || p.flow_project_id || "").trim()
+        || (() => {
+          const m = String(projectPage || "").match(/\/project\/([^/?#]+)/i);
+          return m ? decodeURIComponent(m[1]) : "";
+        })();
+      if (pendingProjectId) {
+        try {
+          await chrome.storage.local.set({ veo_pending_project_id: pendingProjectId.replace(/^projects\//, "") });
+        } catch (_) {}
+      }
       await reloadProjectPage(1, tabId, projectPage, runtime);
       return await fetchVeoAccessTokensTask({ ...msg, payload: { ...p, tab_id: tabId } }, runtime);
     }
@@ -3253,7 +3479,16 @@ export async function runVeoTask(msg, runtime) {
     
     //await resetLabsGoogleLocalStorageAndReload(3, tabId, projectPage, runtime);
     await runtime.progress(5, { stage: "access_token" });
-    const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);
+    const isImageTask = p.workflow_kind === "image" || p.image_mode;
+    // AI Studio image generation authenticates in its own tab and does not
+    // require a Labs/Flow access token. Avoid failing on Flow pages whose
+    // legacy relative auth-session endpoint may not exist during migration.
+    // Video generation now runs the browser-console Flow scripts. Those
+    // scripts obtain their own batchexecute/reCAPTCHA credentials from the
+    // page, so do not require the removed legacy /api/auth/session token.
+    const tokenInfo = isImageTask
+      ? { access_token: p.access_token || "", expires: p.access_expires }
+      : { access_token: p.access_token || "", expires: p.access_expires };
     const at = tokenInfo.access_token;
     //引入拟人操作
     await simulateHumanActivity(tabId, runtime, 5000, 15000, {
@@ -3267,10 +3502,10 @@ export async function runVeoTask(msg, runtime) {
       moveMouse: true,
       timeoutMs: 20000
     });
-    await cleanupProjectWorkflowsBeforeRun(tabId, at, p.project_id, runtime);
-    if (p.workflow_kind === "image" || p.image_mode) {
+    if (isImageTask) {
       return await runImageWorkflow(tabId, p, at, runtime);
     }
+    await cleanupProjectWorkflowsBeforeRun(tabId, at, p.project_id, runtime);
     return await runVideoWorkflow(tabId, p, at, runtime);
   } finally {
     endVeoTaskRun(veoRunId, runtime);

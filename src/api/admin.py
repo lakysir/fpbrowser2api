@@ -11,7 +11,7 @@ import uuid
 import shlex
 import subprocess
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel, Field, field_validator
 
 from ..core.auth import AuthManager
+from ..core.config import config as app_config
 from ..core.database import Database
 from ..core.logger import logger, setup_logging
 from ..core.paths import APP_ROOT, PID_FILE
@@ -457,6 +458,7 @@ PAGE_KEYS: Set[str] = {
     "projects",
     "task_types",
     "tasks",
+    "watermark_tasks",
     "test",
     "network_capture",
     "agent",
@@ -466,6 +468,181 @@ PAGE_KEYS: Set[str] = {
     "logs",
     "users",
 }
+
+
+def _watermark_service_base_url() -> str:
+    raw = (
+        os.getenv("VEO_REMOVE_VIDEO_WATERMARK_SERVICE_URL")
+        or os.getenv("ONNX_WATERMARK_SERVICE_URL")
+        or "http://127.0.0.1:8791/process-video"
+    )
+    raw = str(raw or "").strip().rstrip("/")
+    if not raw:
+        return "http://127.0.0.1:8791"
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        path = (parsed.path or "").rstrip("/")
+        if path.endswith("/process-video"):
+            return f"{parsed.scheme}://{parsed.netloc}"
+    return raw
+
+
+def _comfyui_dispatch_base_url() -> str:
+    """Central ComfyUI scheduler used by the watermark service cluster."""
+    section = (app_config.get_raw_config() or {}).get("comfyui_dispatch")
+    configured = section.get("base_url") if isinstance(section, dict) else ""
+    return str(
+        os.getenv("COMFYUI_DISPATCH_SERVICE_URL") or configured or ""
+    ).strip().rstrip("/")
+
+
+def _watermark_task_service_sources() -> List[Dict[str, str]]:
+    """Return the watermark services whose task inventories are managed together."""
+    candidates = [
+        {
+            "id": "primary",
+            "name": "本机",
+            "url": _watermark_service_base_url(),
+        },
+        {
+            "id": "secondary",
+            "name": os.getenv("WATERMARK_TASK_SECONDARY_SERVICE_NAME", "11号机").strip() or "11号机",
+            "url": os.getenv(
+                "WATERMARK_TASK_SECONDARY_SERVICE_URL",
+                "http://192.168.1.11:8791",
+            ).strip(),
+        },
+        {
+            "id": "tertiary",
+            "name": os.getenv("WATERMARK_TASK_TERTIARY_SERVICE_NAME", "5号机").strip() or "5号机",
+            "url": os.getenv(
+                "WATERMARK_TASK_TERTIARY_SERVICE_URL",
+                "http://192.168.1.5:8791",
+            ).strip(),
+        },
+        {
+            "id": "quaternary",
+            "name": os.getenv("WATERMARK_TASK_QUATERNARY_SERVICE_NAME", "14号机").strip() or "14号机",
+            "url": os.getenv(
+                "WATERMARK_TASK_QUATERNARY_SERVICE_URL",
+                "http://192.168.1.14:8791",
+            ).strip(),
+        },
+    ]
+    dispatch_url = _comfyui_dispatch_base_url()
+    if dispatch_url:
+        candidates.append(
+            {
+                "id": "comfyui-dispatch",
+                "name": "ComfyUI调度服务",
+                "url": dispatch_url,
+                "kind": "comfyui_dispatch",
+            }
+        )
+    sources: List[Dict[str, str]] = []
+    seen_urls: Set[str] = set()
+    for candidate in candidates:
+        url = str(candidate["url"] or "").strip().rstrip("/")
+        if not url or url in seen_urls:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            logger.warning("忽略无效的去水印任务服务地址: %s", url)
+            continue
+        seen_urls.add(url)
+        sources.append(
+            {
+                **candidate,
+                "url": url,
+                "host": str(parsed.hostname or ""),
+                "port": str(parsed.port or (443 if parsed.scheme == "https" else 80)),
+            }
+        )
+    return sources
+
+
+def _watermark_task_sort_value(item: Dict[str, Any]) -> float:
+    value = item.get("created_at")
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+
+
+async def _fetch_watermark_task_source(
+    client: httpx.AsyncClient,
+    source: Dict[str, str],
+    params: Dict[str, Any],
+    required_items: int,
+) -> Dict[str, Any]:
+    if source.get("kind") == "comfyui_dispatch":
+        page_params: Dict[str, Any] = {"limit": min(200, required_items), "offset": 0}
+        if params.get("status"):
+            page_params["status"] = params["status"]
+        if params.get("task_type"):
+            page_params["model"] = params["task_type"]
+        response = await client.get(f"{source['url']}/internal/v1/tasks", params=page_params)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise ValueError("ComfyUI dispatcher task list response is invalid")
+        excluded = str(params.get("exclude_keyword") or "").strip().lower()
+        items = []
+        for raw_item in data["items"]:
+            if not isinstance(raw_item, dict):
+                continue
+            if excluded and excluded in str(raw_item.get("task_type") or "").lower():
+                continue
+            items.append({
+                **raw_item,
+                "source_id": source["id"], "source_name": source["name"],
+                "source_ip": source["host"], "source_port": int(source["port"]),
+                "source_url": source["url"],
+            })
+        return {"items": items, "total": int(data.get("total") or 0), "stats": data.get("stats") or {}}
+    items: List[Dict[str, Any]] = []
+    total = 0
+    stats: Dict[str, int] = {}
+    fetch_offset = 0
+    while fetch_offset < required_items:
+        page_params = {
+            **params,
+            "limit": min(200, required_items - fetch_offset),
+            "offset": fetch_offset,
+        }
+        response = await client.get(f"{source['url']}/tasks", params=page_params)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("任务服务返回格式异常")
+        page_items = data.get("items")
+        if not isinstance(page_items, list):
+            raise ValueError("任务服务 items 格式异常")
+        if fetch_offset == 0:
+            total = max(0, int(data.get("total") or 0))
+            raw_stats = data.get("stats") or {}
+            if isinstance(raw_stats, dict):
+                stats = {str(key): int(value or 0) for key, value in raw_stats.items()}
+        for raw_item in page_items:
+            if not isinstance(raw_item, dict):
+                continue
+            items.append(
+                {
+                    **raw_item,
+                    "source_id": source["id"],
+                    "source_name": source["name"],
+                    "source_ip": source["host"],
+                    "source_port": int(source["port"]),
+                    "source_url": source["url"],
+                }
+            )
+        fetch_offset += len(page_items)
+        if not page_items or fetch_offset >= total:
+            break
+    return {"items": items, "total": total, "stats": stats}
 
 
 def set_dependencies(database: Database) -> None:
@@ -623,6 +800,10 @@ class UpdateSystemConfigRequest(BaseModel):
         return vv
 
 
+class UpdateWatermarkTaskSettingsRequest(BaseModel):
+    skip_video_watermark_remove: bool = False
+
+
 class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
@@ -667,6 +848,7 @@ class CreateTaskTypeRequest(BaseModel):
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
     project_id: Optional[int] = Field(default=None, ge=1)
     concurrency: int = Field(default=1, ge=1, le=999)
+    total_concurrency: int = Field(default=100, ge=1, le=999999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
@@ -685,6 +867,7 @@ class UpdateTaskTypeRequest(BaseModel):
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-zA-Z0-9_]+$")
     project_id: Optional[int] = Field(default=None, ge=1)
     concurrency: int = Field(default=1, ge=1, le=999)
+    total_concurrency: int = Field(default=100, ge=1, le=999999)
     continuous_error_threshold: int = Field(default=3, ge=1, le=999)
     continuous_error_close_window_threshold: int = Field(default=3, ge=1, le=999999)
     timeout_seconds: int = Field(default=1800, ge=10, le=24 * 3600)
@@ -1040,8 +1223,8 @@ def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
     return out
 
 
-# RoxyBrowser /proxy/create 的 checkChannel 要传渠道的 value(URL),不是 label。
-# 之前填 "IPRust.io"(label)→ RoxyBrowser 报 "checkChannel参数值错误"(code 101),导致任何导入都建不成。
+# RoxyBrowser /proxy/create 的 checkChannel 要传渠道的 value(URL)，不是 label。
+# 之前填 "IPRust.io"(label)，RoxyBrowser 报 "checkChannel参数值错误"(code 101)，导致批导入新建不成。
 # value 来自 /proxy/detect_channel(IPRust.io 对应 http://iprust.io/ip.json)。
 PROXY_IMPORT_CHECK_CHANNEL = "http://iprust.io/ip.json"
 PROXY_IMPORT_DEFAULT_PROTOCOL = "SOCKS5"
@@ -1478,6 +1661,7 @@ async def get_system_config(token: str = Depends(verify_admin_token)):
             "debug_enabled": syscfg.debug_enabled,
             "log_to_file": syscfg.log_to_file,
             "stop_accepting_tasks": bool(getattr(syscfg, "stop_accepting_tasks", False)),
+            "skip_video_watermark_remove": bool(getattr(syscfg, "skip_video_watermark_remove", False)),
             "public_create_task_max_inflight": normalize_public_create_task_max_inflight(
                 getattr(syscfg, "public_create_task_max_inflight", None)
             ),
@@ -3354,9 +3538,10 @@ async def set_window_pure_mode(
             "platformRemarks": str(acct.platform_remarks or "").strip(),
         }]
     openWorkbench = 0 if req.pure_mode else 1
+    forbidSavePassword = False if req.pure_mode else True
     mdf_payload: Dict[str, Any] = {
         "proxyInfo": proxy_info,
-        "fingerInfo": {"openWorkbench": openWorkbench},
+        "fingerInfo": {"openWorkbench": openWorkbench,"forbidSavePassword":forbidSavePassword},
     }
     if wpl:
         mdf_payload["windowPlatformList"] = wpl
@@ -4349,6 +4534,7 @@ async def create_task_type(req: CreateTaskTypeRequest, token: str = Depends(veri
             req.code,
             req.project_id,
             req.concurrency,
+            req.total_concurrency,
             req.continuous_error_threshold,
             req.continuous_error_close_window_threshold,
             req.timeout_seconds,
@@ -4396,6 +4582,7 @@ async def update_task_type(task_type_id: int, req: UpdateTaskTypeRequest, token:
             code=req.code,
             project_id=req.project_id,
             concurrency=req.concurrency,
+            total_concurrency=req.total_concurrency,
             continuous_error_threshold=req.continuous_error_threshold,
             continuous_error_close_window_threshold=req.continuous_error_close_window_threshold,
             timeout_seconds=req.timeout_seconds,
@@ -6572,6 +6759,277 @@ async def list_task_timeline_items(
         task_type_code=task_type_code,
     )
     return {"success": True, **data}
+
+
+@router.get("/api/admin/watermark-tasks")
+async def list_watermark_tasks(
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None,
+    task_type: Optional[str] = None,
+    source: Optional[str] = Query(None, max_length=50),
+    exclude_keyword: Optional[str] = Query(None, max_length=100),
+    token: str = Depends(verify_admin_token),
+):
+    await _ensure_page_access(token, "watermark_tasks")
+    lim = max(1, min(200, int(limit or 50)))
+    off = max(0, int(offset or 0))
+    all_sources = _watermark_task_service_sources()
+    selected_sources = all_sources
+    if source:
+        selected_sources = [item for item in all_sources if item["id"] == source]
+        if not selected_sources:
+            raise HTTPException(status_code=400, detail="未知的任务服务器")
+    params: Dict[str, Any] = {}
+    if status:
+        params["status"] = status
+    if task_type:
+        params["task_type"] = task_type
+    if exclude_keyword:
+        params["exclude_keyword"] = exclude_keyword
+    required_items = off + lim
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+        results = await asyncio.gather(
+            *(
+                _fetch_watermark_task_source(client, item, params, required_items)
+                for item in selected_sources
+            ),
+            return_exceptions=True,
+        )
+
+    merged_items: List[Dict[str, Any]] = []
+    total = 0
+    stats = {"queued": 0, "running": 0, "completed": 0, "failed": 0}
+    errors: List[Dict[str, str]] = []
+    source_states: List[Dict[str, Any]] = []
+    for service, result in zip(selected_sources, results):
+        if isinstance(result, BaseException):
+            error = str(result)
+            errors.append({"source_id": service["id"], "message": error})
+            source_states.append({**service, "online": False, "error": error})
+            continue
+        merged_items.extend(result["items"])
+        total += int(result["total"])
+        for key in stats:
+            stats[key] += int(result["stats"].get(key) or 0)
+        source_states.append(
+            {**service, "online": True, "total": int(result["total"]), "error": ""}
+        )
+    if not source_states or len(errors) == len(selected_sources):
+        detail = "; ".join(item["message"] for item in errors) or "没有可用的任务服务器"
+        raise HTTPException(status_code=502, detail=f"读取任务列表失败: {detail}")
+
+    merged_items.sort(key=_watermark_task_sort_value, reverse=True)
+    return {
+        "success": True,
+        "partial_success": bool(errors),
+        "total": total,
+        "limit": lim,
+        "offset": off,
+        "stats": stats,
+        "items": merged_items[off:off + lim],
+        "sources": source_states,
+        "available_sources": all_sources,
+        "errors": errors,
+    }
+
+
+@router.get("/api/admin/watermark-tasks/{source_id}/{task_id}/payload")
+async def get_watermark_task_payload(
+    source_id: str,
+    task_id: str,
+    token: str = Depends(verify_admin_token),
+):
+    await _ensure_page_access(token, "watermark_tasks")
+    task_id = str(task_id or "").strip()
+    if not task_id or len(task_id) > 128:
+        raise HTTPException(status_code=400, detail="invalid task id")
+    source = next(
+        (item for item in _watermark_task_service_sources() if item["id"] == source_id),
+        None,
+    )
+    if source is None:
+        raise HTTPException(status_code=400, detail="unknown task service")
+    if source.get("kind") == "comfyui_dispatch":
+        url = f"{source['url']}/internal/v1/tasks/{quote(task_id, safe='')}/payload"
+    else:
+        url = f"{source['url']}/tasks/{quote(task_id, safe='')}/payload"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = await client.get(url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"failed to read task payload: {exc}") from exc
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="task not found")
+    try:
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="invalid task payload response") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="invalid task payload response")
+    return {"success": True, "task_id": task_id, "payload": data.get("payload"), "upstream_payload": data.get("upstream_payload")}
+
+
+@router.post("/api/admin/watermark-tasks/{source_id}/{task_id}/fail")
+async def fail_watermark_task(
+    source_id: str,
+    task_id: str,
+    token: str = Depends(verify_admin_token),
+):
+    """Force a running task to failed so downstream polling receives an error."""
+    await _ensure_page_access(token, "watermark_tasks")
+    source = next((item for item in _watermark_task_service_sources() if item["id"] == source_id), None)
+    if source is None:
+        raise HTTPException(status_code=400, detail="unknown task service")
+    if source.get("kind") == "comfyui_dispatch":
+        raise HTTPException(status_code=400, detail="this service does not support force-fail")
+    url = f"{source['url']}/tasks/clear-running"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            response = await client.post(url, json={"task_ids": [task_id], "message": "内部错误"})
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"failed to fail task: {exc}") from exc
+    return {"success": True, "task_id": task_id, "cleared": int(data.get("cleared") or 0)}
+
+
+@router.get("/api/admin/watermark-tasks/health")
+async def get_watermark_task_service_health(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "watermark_tasks")
+    sources = _watermark_task_service_sources()
+
+    async def check(client: httpx.AsyncClient, source: Dict[str, str]) -> Dict[str, Any]:
+        try:
+            response = await client.get(f"{source['url']}/health")
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("健康检查返回格式异常")
+            return {
+                **source,
+                "online": True,
+                "healthy": data.get("ok") is True,
+                "model": str(data.get("model") or ""),
+                "input_shape": data.get("input_shape"),
+                "error": "" if data.get("ok") is True else "服务可访问，但模型尚未就绪",
+            }
+        except Exception as exc:
+            return {
+                **source,
+                "online": False,
+                "healthy": False,
+                "model": "",
+                "input_shape": None,
+                "error": str(exc),
+            }
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=3.0)) as client:
+        states = await asyncio.gather(*(check(client, source) for source in sources))
+    return {"success": True, "sources": states}
+
+
+@router.get("/api/admin/watermark-tasks/settings")
+async def get_watermark_task_settings(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "watermark_tasks")
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    syscfg = await db.get_system_config()
+    return {
+        "success": True,
+        "settings": {
+            "skip_video_watermark_remove": bool(getattr(syscfg, "skip_video_watermark_remove", False)),
+        },
+    }
+
+
+@router.get("/api/admin/watermark-tasks/comfyui-status")
+async def get_comfyui_workflow_status(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "watermark_tasks")
+    base_url = _comfyui_dispatch_base_url()
+    if not base_url:
+        raise HTTPException(
+            status_code=503,
+            detail="comfyui_dispatch.base_url is not configured",
+        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            resp = await client.get(f"{base_url}/internal/v1/status")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to read ComfyUI status: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="ComfyUI status response must be an object")
+    data.setdefault("success", True)
+    return data
+
+
+@router.post("/api/admin/watermark-tasks/settings")
+async def update_watermark_task_settings(
+    req: UpdateWatermarkTaskSettingsRequest,
+    token: str = Depends(verify_admin_token),
+):
+    await _ensure_page_access(token, "watermark_tasks")
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    await db.update_system_config(skip_video_watermark_remove=bool(req.skip_video_watermark_remove))
+    await db.reload_config_to_memory()
+    return {
+        "success": True,
+        "settings": {
+            "skip_video_watermark_remove": bool(req.skip_video_watermark_remove),
+        },
+        "message": "去水印开关已保存",
+    }
+
+
+@router.get("/api/admin/watermark-tasks/apikey-details")
+async def get_watermark_apikey_details(token: str = Depends(verify_admin_token)):
+    await _ensure_page_access(token, "watermark_tasks")
+    base_url = _watermark_service_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/api/v3/apikey/details")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"读取SD余额失败: {exc}") from exc
+    return data
+
+
+@router.get("/api/admin/watermark-tasks/billing-details")
+async def get_watermark_billing_details(
+    start_date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    page_number: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    token: str = Depends(verify_admin_token),
+):
+    await _ensure_page_access(token, "watermark_tasks")
+    base_url = _watermark_service_base_url()
+    params: dict[str, str | int] = {
+        "page_number": page_number,
+        "page_size": page_size,
+    }
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+            resp = await client.get(
+                f"{base_url.rstrip('/')}/api/v3/billing-details",
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"读取SD消费明细失败: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="SD消费明细响应格式错误")
+    return data
 
 
 # -------------------- logs --------------------

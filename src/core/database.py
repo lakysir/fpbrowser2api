@@ -183,6 +183,7 @@ class Database:
                     debug_enabled BOOLEAN DEFAULT 0,
                     log_to_file BOOLEAN DEFAULT 0,
                     stop_accepting_tasks BOOLEAN DEFAULT 0,
+                    skip_video_watermark_remove BOOLEAN DEFAULT 0,
                     public_create_task_max_inflight INTEGER DEFAULT 180,
                     server_count INTEGER DEFAULT 1,
                     updated_at TIMESTAMP DEFAULT (datetime('now','localtime'))
@@ -346,6 +347,7 @@ class Database:
                     code TEXT UNIQUE NOT NULL,
                     project_id INTEGER,
                     concurrency INTEGER DEFAULT 1,
+                    total_concurrency INTEGER DEFAULT 100,
                     continuous_error_threshold INTEGER DEFAULT 3,
                     continuous_error_close_window_threshold INTEGER DEFAULT 3,
                     timeout_seconds INTEGER DEFAULT 1800,
@@ -608,6 +610,7 @@ class Database:
             api_key = str(config_dict.get("global", {}).get("api_key", "fpb123456"))
             debug_enabled = bool(config_dict.get("system", {}).get("debug_enabled", False))
             log_to_file = bool(config_dict.get("system", {}).get("log_to_file", False))
+            skip_video_watermark_remove = bool(config_dict.get("system", {}).get("skip_video_watermark_remove", False))
             public_create_task_max_inflight = int(
                 config_dict.get("system", {}).get("public_create_task_max_inflight", 180) or 180
             )
@@ -618,11 +621,20 @@ class Database:
                 """
                 INSERT INTO system_config (
                     id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file,
-                    public_create_task_max_inflight, server_count
+                    skip_video_watermark_remove, public_create_task_max_inflight, server_count
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file, public_create_task_max_inflight, server_count),
+                (
+                    proxy_enabled,
+                    proxy_url,
+                    api_key,
+                    debug_enabled,
+                    log_to_file,
+                    skip_video_watermark_remove,
+                    public_create_task_max_inflight,
+                    server_count,
+                ),
             )
 
         if await self._table_exists(db, "ai_agent_config"):
@@ -701,6 +713,7 @@ class Database:
                 columns_to_add = [
                     ("log_to_file", "BOOLEAN DEFAULT 0"),
                     ("stop_accepting_tasks", "BOOLEAN DEFAULT 0"),
+                    ("skip_video_watermark_remove", "BOOLEAN DEFAULT 0"),
                     ("public_create_task_max_inflight", "INTEGER DEFAULT 180"),
                     ("server_count", "INTEGER DEFAULT 1"),
                     ("browser_open_concurrency", "INTEGER DEFAULT 3"),
@@ -725,6 +738,7 @@ class Database:
                     ("refresh_quota_handler", "TEXT"),
                     ("continuous_error_close_window_threshold", "INTEGER DEFAULT 3"),
                     ("project_id", "INTEGER"),
+                    ("total_concurrency", "INTEGER DEFAULT 100"),
                     ("error_retry_count", "INTEGER DEFAULT 0"),
                     ("default_target_url", "TEXT"),
                     ("window_call_cooldown_seconds", "INTEGER DEFAULT 30"),
@@ -1054,6 +1068,7 @@ class Database:
         debug_enabled: Optional[bool] = None,
         log_to_file: Optional[bool] = None,
         stop_accepting_tasks: Optional[bool] = None,
+        skip_video_watermark_remove: Optional[bool] = None,
         public_create_task_max_inflight: Optional[int] = None,
         server_count: Optional[int] = None,
         browser_open_concurrency: Optional[int] = None,
@@ -1074,6 +1089,11 @@ class Database:
             new_log_to_file = log_to_file if log_to_file is not None else bool(current.get("log_to_file", False))
             new_stop_accepting = (
                 stop_accepting_tasks if stop_accepting_tasks is not None else bool(current.get("stop_accepting_tasks", False))
+            )
+            new_skip_video_watermark_remove = (
+                skip_video_watermark_remove
+                if skip_video_watermark_remove is not None
+                else bool(current.get("skip_video_watermark_remove", False))
             )
             current_inflight = int(current.get("public_create_task_max_inflight", 180) or 180)
             new_public_create_task_max_inflight = (
@@ -1116,11 +1136,11 @@ class Database:
                 """
                 INSERT INTO system_config (
                   id, proxy_enabled, proxy_url, api_key, debug_enabled, log_to_file,
-                  stop_accepting_tasks, public_create_task_max_inflight, server_count,
+                  stop_accepting_tasks, skip_video_watermark_remove, public_create_task_max_inflight, server_count,
                   browser_open_concurrency, browser_open_queue_timeout,
                   task_queue_max_size, task_queue_timeout_seconds, updated_at
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                 ON CONFLICT(id) DO UPDATE SET
                   proxy_enabled=excluded.proxy_enabled,
                   proxy_url=excluded.proxy_url,
@@ -1128,6 +1148,7 @@ class Database:
                   debug_enabled=excluded.debug_enabled,
                   log_to_file=excluded.log_to_file,
                   stop_accepting_tasks=excluded.stop_accepting_tasks,
+                  skip_video_watermark_remove=excluded.skip_video_watermark_remove,
                   public_create_task_max_inflight=excluded.public_create_task_max_inflight,
                   server_count=excluded.server_count,
                   browser_open_concurrency=excluded.browser_open_concurrency,
@@ -1143,6 +1164,7 @@ class Database:
                     new_debug_enabled,
                     new_log_to_file,
                     new_stop_accepting,
+                    new_skip_video_watermark_remove,
                     new_public_create_task_max_inflight,
                     new_server_count,
                     new_browser_open_concurrency,
@@ -1165,6 +1187,10 @@ class Database:
         mem.set_log_to_file_from_db(syscfg.log_to_file)
         try:
             mem.set_stop_accepting_tasks_from_db(syscfg.stop_accepting_tasks)
+        except Exception:
+            pass
+        try:
+            mem.set_skip_video_watermark_remove_from_db(syscfg.skip_video_watermark_remove)
         except Exception:
             pass
 
@@ -4243,6 +4269,7 @@ class Database:
         code: str,
         project_id: Optional[int],
         concurrency: int,
+        total_concurrency: int,
         continuous_error_threshold: int,
         continuous_error_close_window_threshold: int,
         timeout_seconds: int,
@@ -4259,18 +4286,19 @@ class Database:
             cur = await db.execute(
                 """
                 INSERT INTO task_types (
-                  name, code, project_id, concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
+                  name, code, project_id, concurrency, total_concurrency, continuous_error_threshold, continuous_error_close_window_threshold, timeout_seconds,
                   window_call_cooldown_seconds, create_task_handler, refresh_quota_handler, error_retry_count, default_target_url,
                   window_pool_enabled, window_pool_reconcile_interval_sec, window_pool_cloudflare_interval_sec,
                   enabled, deleted
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
                 """,
                 (
                     name.strip(),
                     code.strip(),
                     int(project_id) if project_id is not None else None,
                     int(concurrency),
+                    int(total_concurrency),
                     int(continuous_error_threshold),
                     int(continuous_error_close_window_threshold),
                     int(timeout_seconds),
@@ -4294,6 +4322,7 @@ class Database:
         code: str,
         project_id: Optional[int],
         concurrency: int,
+        total_concurrency: int,
         continuous_error_threshold: int,
         continuous_error_close_window_threshold: int,
         timeout_seconds: int,
@@ -4330,7 +4359,7 @@ class Database:
             await db.execute(
                 """
                 UPDATE task_types
-                SET name=?, code=?, project_id=?, concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
+                SET name=?, code=?, project_id=?, concurrency=?, total_concurrency=?, continuous_error_threshold=?, continuous_error_close_window_threshold=?, timeout_seconds=?,
                     window_call_cooldown_seconds=?, create_task_handler=?, refresh_quota_handler=?, error_retry_count=?, default_target_url=?,
                     window_pool_enabled=?, window_pool_reconcile_interval_sec=?, window_pool_cloudflare_interval_sec=?,
                     enabled=?, updated_at=datetime('now','localtime')
@@ -4341,6 +4370,7 @@ class Database:
                     new_code,
                     int(project_id) if project_id is not None else None,
                     int(concurrency),
+                    int(total_concurrency),
                     int(continuous_error_threshold),
                     int(continuous_error_close_window_threshold),
                     int(timeout_seconds),
@@ -4495,6 +4525,25 @@ class Database:
             cur = await db.execute("SELECT * FROM task_types WHERE code=? AND deleted=0", (code.strip(),))
             row = await cur.fetchone()
             return TaskType(**dict(row)) if row else None
+
+    async def get_task_type_inflight_total(self, code: str) -> int:
+        async with self._read_conn() as db:
+            cur = await db.execute(
+                """
+                SELECT COALESCE(SUM(COALESCE(m.inflight_slots, 0)), 0)
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                WHERE t.code = ?
+                  AND t.deleted = 0
+                  AND m.deleted = 0
+                """,
+                (code.strip(),),
+            )
+            row = await cur.fetchone()
+        try:
+            return max(0, int(row[0] if row else 0))
+        except Exception:
+            return 0
 
     async def get_task_type(self, task_type_id: int) -> Optional[TaskType]:
         async with self._read_conn() as db:

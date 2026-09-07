@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .paths import CONFIG_DIR
 
@@ -36,6 +36,7 @@ class Config:
         self._debug_enabled: Optional[bool] = None
         self._log_to_file: Optional[bool] = None
         self._stop_accepting_tasks: Optional[bool] = None
+        self._skip_video_watermark_remove: Optional[bool] = None
 
     def _load_config(self) -> Dict[str, Any]:
         config_path = CONFIG_DIR / "setting.toml"
@@ -136,6 +137,120 @@ class Config:
     def set_stop_accepting_tasks_from_db(self, enabled: bool) -> None:
         self._stop_accepting_tasks = bool(enabled)
         self._config.setdefault("system", {})["stop_accepting_tasks"] = bool(enabled)
+
+    @property
+    def skip_video_watermark_remove(self) -> bool:
+        if self._skip_video_watermark_remove is not None:
+            return bool(self._skip_video_watermark_remove)
+        return bool(self._config.get("system", {}).get("skip_video_watermark_remove", False))
+
+    def set_skip_video_watermark_remove_from_db(self, enabled: bool) -> None:
+        self._skip_video_watermark_remove = bool(enabled)
+        self._config.setdefault("system", {})["skip_video_watermark_remove"] = bool(enabled)
+
+    # -------- video postprocess (去水印 / 1080p 超分) --------
+    def _video_postprocess(self) -> Dict[str, Any]:
+        section = self._config.get("video_postprocess", {})
+        return section if isinstance(section, dict) else {}
+
+    @property
+    def veo_face_mosaic_enabled(self) -> bool:
+        """Whether VEO reference images/videos should have faces mosaiced."""
+        import os
+
+        raw = os.getenv("FPB_VEO_FACE_MOSAIC", "")
+        if raw.strip():
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._video_postprocess().get("face_mosaic", True))
+
+    @property
+    def video_remove_watermark_enabled(self) -> bool:
+        """是否启用生成后去水印（默认关闭，需自行部署 onnx_watermark_service）。"""
+        import os
+        raw = os.getenv("FPB_VIDEO_REMOVE_WATERMARK", "")
+        if raw.strip():
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._video_postprocess().get("remove_watermark", False))
+
+    @property
+    def video_upscale_1080p_enabled(self) -> bool:
+        """是否启用 *-1080p 模型的超分（默认关闭）。"""
+        import os
+        raw = os.getenv("FPB_VIDEO_UPSCALE_1080P", "")
+        if raw.strip():
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._video_postprocess().get("upscale_1080p", False))
+
+    @property
+    def video_postprocess_service_base_url(self) -> str:
+        """去水印/超分外部服务根地址；留空视为未部署。"""
+        import os
+        raw = os.getenv("FPB_VIDEO_POSTPROCESS_SERVICE_BASE_URL", "")
+        if raw.strip():
+            return raw.strip().rstrip("/")
+        return str(self._video_postprocess().get("service_base_url", "") or "").strip().rstrip("/")
+
+    @property
+    def video_postprocess_service_base_urls(self) -> List[str]:
+        """Return shared postprocess endpoints in failover order."""
+        import os
+
+        raw_env = os.getenv("FPB_VIDEO_POSTPROCESS_SERVICE_BASE_URLS", "").strip()
+        configured: Any = (
+            raw_env.split(",")
+            if raw_env
+            else self._video_postprocess().get("service_base_urls", [])
+        )
+        if isinstance(configured, str):
+            configured = [configured]
+        if not isinstance(configured, list):
+            configured = []
+
+        urls: List[str] = []
+        for value in [*configured, self.video_postprocess_service_base_url]:
+            url = str(value or "").strip().rstrip("/")
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    @property
+    def video_upscale_service_base_urls(self) -> List[str]:
+        """Return upscale endpoints, allowing an optional upscale-only override."""
+        import os
+
+        raw_env = os.getenv("FPB_VIDEO_UPSCALE_SERVICE_BASE_URLS", "").strip()
+        configured: Any = (
+            raw_env.split(",")
+            if raw_env
+            else self._video_postprocess().get("upscale_service_base_urls", [])
+        )
+        if isinstance(configured, str):
+            configured = [configured]
+        if not isinstance(configured, list) or not configured:
+            return self.video_postprocess_service_base_urls
+
+        urls: List[str] = []
+        for value in configured:
+            url = str(value or "").strip().rstrip("/")
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    @property
+    def video_upscale_timeout_seconds(self) -> float:
+        try:
+            value = float(self._video_postprocess().get("upscale_timeout_seconds", 1500.0))
+        except (TypeError, ValueError):
+            value = 1500.0
+        return max(30.0, value)
+
+    @property
+    def video_upscale_retry_interval_seconds(self) -> float:
+        try:
+            value = float(self._video_postprocess().get("upscale_retry_interval_seconds", 20.0))
+        except (TypeError, ValueError):
+            value = 20.0
+        return max(0.0, value)
 
     # -------- browser extension executor --------
     @property
