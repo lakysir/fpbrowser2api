@@ -6434,7 +6434,6 @@ async def veo_workflow(
                 log_file=log_file,
             )
             """
-        _ext_result = _veo_rewrite_flow_content_urls(_ext_result)
         return _ext_result, project_page
 
     raise NonPenalizedTaskError(
