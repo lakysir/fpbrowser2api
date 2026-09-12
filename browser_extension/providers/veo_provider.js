@@ -978,6 +978,23 @@ function cleanTokenValue(v) {
   return String(v || "").trim();
 }
 
+// Flow 返回的 expires 为 ISO-8601 字符串（通常形如 2026-09-08T12:34:56.000Z）。
+// 保存前顺延 6 小时，并加入 0~30 分钟随机值；无法解析时保留原值，避免刷新流程报错。
+function adjustVeoTokenExpires(expires) {
+  const raw = String(expires || "").trim();
+  if (!raw) return expires || null;
+  try {
+    const ms = Date.parse(raw);
+    if (!Number.isFinite(ms)) return expires;
+    const randomMinutes = Math.floor(Math.random() * 1801);
+    const adjusted = new Date(ms + (6 * 60 * 60 + randomMinutes * 60) * 1000);
+    if (Number.isNaN(adjusted.getTime())) return expires;
+    return adjusted.toISOString();
+  } catch (_) {
+    return expires;
+  }
+}
+
 async function fetchVeoLongAccessTokenTask(msg, runtime) {
   const p = msg.payload || {};
   const targetUrl = p.target_url || p.project_page || "https://labs.google/fx";
@@ -1041,6 +1058,8 @@ async function fetchVeoAccessTokensTask(msg, runtime) {
     }
   });
   if (!result || !result.token) throw new Error("VEO at token not found; refresh the Flow page and retry");
+  // 这里转换后再返回，调用方会将 expires 写回 task_type_windows.sora_access_expires。
+  result.expires = adjustVeoTokenExpires(result.expires);
   await runtime.progress(100, { stage: "done", token_kind: "at" });
   return {
     type: "veo_access_tokens",
@@ -2913,9 +2932,11 @@ async function upsampleImage(tabId, at, p, parsed, runtime) {
 }
 
 async function runImageWorkflow(tabId, p, at, runtime) {
+  const resolution = normalizeAiStudioImageResolution(p);
+  if (resolution === "1K") return await runFlow1kImageWorkflow(tabId, p, runtime);
   return await runAiStudio4kImageWorkflow(p._ai_studio_tab_id, p, runtime);
   /* Legacy Flow image generation is intentionally kept below for rollback,
-     but all current 1K/2K/4K image requests use AI Studio. */
+     while 1K requests use the Flow console scripts above. */
   const projectId = p.project_id;
   const prompt = p.prompt || "";
   const imageUrls = p.extension_image_reference_urls || [];
@@ -3167,6 +3188,52 @@ async function runInjectedVeoVideo(tabId, scriptPath, config) {
   });
   if (!result) throw new Error("VEO injected script returned an empty result");
   return result;
+}
+
+async function runInjectedVeoImage(tabId, scriptName, config) {
+  const scriptPath = `providers/veo/${scriptName.replace(/\.txt$/i, ".js")}`;
+  await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: [scriptPath] });
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: async (runnerConfig) => {
+      try {
+        const runner = globalThis.runGeneratedTest;
+        if (typeof runner !== "function") throw new Error("Injected image script did not define runGeneratedTest(config)");
+        return await runner(runnerConfig || {});
+      } catch (error) {
+        return { ok: false, error: String(error && error.message || error), stack: error && error.stack };
+      }
+    },
+    args: [config]
+  });
+  if (!result) throw new Error("VEO injected image script returned an empty result");
+  return result;
+}
+
+async function runFlow1kImageWorkflow(tabId, p, runtime) {
+  const refs = getAiStudioReferenceImageSources(p).map(x => String(x || "").trim()).filter(Boolean);
+  const ratio = mapAiStudioImageAspectRatio(p);
+  const config = {
+    prompt: String(p.prompt || "").trim(),
+    ratio,
+    modelName: mapAiStudioImageModelName(p).includes("gemini-3.1") ? "NARWHAL" : "GEM_PIX_2",
+    referenceImageUrls: refs
+  };
+  const scriptName = refs.length ? "image2image_injected.js" : "text2image_injected.js";
+  await runtime.progress(10, { stage: "submit_image_task_flow", workflow_kind: "image", resolution: "1K", model_name: config.modelName, i2i_image_count: refs.length });
+  const result = await runInjectedVeoImage(tabId, scriptName, config);
+  if (!result.ok) throw new Error(String(result.error || "Flow 1K image generation failed"));
+  const imageUrl = String(result.imageUrl || result.image_url || result.result?.imageUrl || "").trim();
+  if (!imageUrl) throw new Error("Flow 1K image generation returned no image URL");
+  await runtime.progress(100, { stage: "done", image_url: imageUrl, resolution: "1K" });
+  return {
+    type: "veo_workflow_image", message: "Flow 1K image generation completed", workflow_kind: "image",
+    share_url: imageUrl, image_url: imageUrl, model_name: p.extension_image_model_name || "NARWHAL",
+    ai_studio_model_name: config.modelName, aspect_ratio: p.extension_image_aspect_ratio || ratio,
+    resolution: "1K", upsample_ok: false, project_id: p.project_id, generated_media_id: result.result?.mediaUUID || result.mediaUUID || "",
+    generated_workflow_id: "", workflow_archived: false, i2i_image_count: refs.length, injected_result: result
+  };
 }
 
 async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
@@ -3426,11 +3493,15 @@ export async function runVeoTask(msg, runtime) {
     const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
     let aiStudioTabId = null;
     const projectTab = await chrome.tabs.get(tabId);
-    aiStudioTabId = await ensureAiStudioNewChatTab({ active: false, windowId: projectTab && projectTab.windowId });
-    if (!aiStudioTabId) throw new Error("AI Studio new_chat tab could not be opened");
+    const isImageTask = p.workflow_kind === "image" || p.image_mode;
+    const imageResolution = isImageTask ? normalizeAiStudioImageResolution(p) : "";
+    if (!isImageTask || imageResolution !== "1K") {
+      aiStudioTabId = await ensureAiStudioNewChatTab({ active: false, windowId: projectTab && projectTab.windowId });
+      if (!aiStudioTabId) throw new Error("AI Studio new_chat tab could not be opened");
+    }
     p._ai_studio_tab_id = aiStudioTabId;
     await chrome.tabs.update(tabId, { active: true });
-    closeOtherTabsInSameWindowLater([tabId, aiStudioTabId].filter(Boolean), 5000);
+    if (aiStudioTabId) closeOtherTabsInSameWindowLater([tabId, aiStudioTabId], 5000);
 
     if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
       const pendingProjectId = String(p.project_id || p.projectId || p.flow_project_id || "").trim()
@@ -3479,7 +3550,6 @@ export async function runVeoTask(msg, runtime) {
     
     //await resetLabsGoogleLocalStorageAndReload(3, tabId, projectPage, runtime);
     await runtime.progress(5, { stage: "access_token" });
-    const isImageTask = p.workflow_kind === "image" || p.image_mode;
     // AI Studio image generation authenticates in its own tab and does not
     // require a Labs/Flow access token. Avoid failing on Flow pages whose
     // legacy relative auth-session endpoint may not exist during migration.

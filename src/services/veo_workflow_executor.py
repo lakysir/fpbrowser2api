@@ -1984,6 +1984,20 @@ _VEO_AI_STUDIO_IMAGE_REFUSAL_MARKERS = (
 _VEO_RUNTIME_GENERATION_FAILURE_MARKERS = (
     "Generation job finished with state: FAILED",
     "PUBLIC_ERROR_HIGH_TRAFFIC",
+    # Gemini API quota exhaustion is an account/window failure.  The extension
+    # bridge currently wraps task errors as NonPenalizedTaskError, so recognize
+    # the stable API message here and convert it to RuntimeError in veo_workflow.
+    "YOU EXCEEDED YOUR CURRENT QUOTA",
+    # Image generation can fail after the task completes when the extension
+    # cannot locate the generated asset URL; this is an execution/window
+    # failure and should count toward the window error threshold.
+    "无法从响应中提取图片URL",
+    # Authentication/request failures from the extension indicate a broken
+    # session or window state and should count as runtime errors as well.
+    # Failure to extract the media UUID indicates an unusable browser-task
+    # response and should count as a runtime/window error as well.
+    "无法提取媒体UUID",
+    "请求失败: 401",
 )
 
 

@@ -1,9 +1,9 @@
 /*
 runGeneratedTest(config) parameter contract:
 The JSON in the Test Config box is passed as config. Keep this list even when some fields are unused.
-- config.prompt: string - 视频生成的提示词
-- config.referenceImageUrls: array - 参考图片URL数组（1-4张）
-- config.aspectRatio: string - 视频横竖比例，可选值："9:16"（竖版）或 "16:9"（横版），默认 "16:9"
+- config.prompt: string - 文生图的提示词
+- config.ratio: string - 图片比例，可选值："1:1"（方形）、"16:9"（横版）、"9:16"（竖版）
+- config.referenceImageUrls: array - 参考图片URL数组
 */
 
 async function runGeneratedTest(config) {
@@ -11,7 +11,8 @@ async function runGeneratedTest(config) {
   
   const prompt = String(config.prompt || "").trim();
   const referenceImageUrls = Array.isArray(config.referenceImageUrls) ? config.referenceImageUrls : [];
-  const aspectRatio = String(config.aspectRatio || "16:9").trim();
+  const ratio = String(config.ratio || "1:1").trim();
+  const modelName = String(config.modelName || "GEM_PIX_2").trim().toUpperCase() === "NARWHAL" ? "NARWHAL" : "GEM_PIX_2";
   
   if (!prompt) {
     return { ok: false, error: "缺少必需参数: config.prompt" };
@@ -21,27 +22,29 @@ async function runGeneratedTest(config) {
     return { ok: false, error: "缺少必需参数: config.referenceImageUrls（至少需要1张参考图）" };
   }
   
-  if (referenceImageUrls.length > 4) {
-    return { ok: false, error: "参考图片数量超过限制（最多4张）" };
-  }
-  
-  // 验证并转换 aspectRatio
-  let aspectRatioCode;
-  if (aspectRatio === "9:16") {
-    aspectRatioCode = 1; // 竖版
-  } else if (aspectRatio === "16:9") {
-    aspectRatioCode = 2; // 横版
+  // 验证并转换 ratio
+  let ratioValue;
+  if (ratio === "1:1") {
+    ratioValue = 1; // 方形
+  } else if (ratio === "16:9") {
+    ratioValue = 3; // 横版
+  } else if (ratio === "9:16") {
+    ratioValue = 2; // 竖版
+  } else if (ratio === "4:3") {
+    ratioValue = 5;
+  } else if (ratio === "3:4") {
+    ratioValue = 4;
   } else {
     return { 
       ok: false, 
-      error: `无效的 aspectRatio 参数: "${aspectRatio}"，仅支持 "9:16" 或 "16:9"` 
+      error: `无效的 ratio 参数: "${ratio}"，仅支持 "1:1"、"16:9" 或 "9:16"` 
     };
   }
   
-  console.log("🚀 开始多图生视频测试");
+  console.log("🚀 开始多参考图生图测试");
   console.log("  - 提示词:", prompt);
   console.log("  - 参考图数量:", referenceImageUrls.length);
-  console.log("  - 视频比例:", aspectRatio, `(代码: ${aspectRatioCode})`);
+  console.log("  - 图片比例:", ratio, `(代码: ${ratioValue})`);
   referenceImageUrls.forEach((url, idx) => {
     console.log(`  - 参考图${idx + 1}:`, url);
   });
@@ -187,14 +190,14 @@ async function runGeneratedTest(config) {
     return decoded;
   }
 
-  function extractVideoUrl(responseText) {
+  function extractImageUrl(responseText) {
     const decoded = decodeBatchExecuteResponse(responseText);
-    const match = decoded.match(/https:\/\/flow-content\.google\/video\/[0-9a-f-]+\?[^\s"'\\\]]+/i);
+    const match = decoded.match(/https:\/\/flow-content\.google\/image\/[0-9a-f-]+\?[^\s"'\\\]]+/i);
     if (!match) {
-      return { videoUrl: null, decodedResponse: decoded };
+      return { imageUrl: null, decodedResponse: decoded };
     }
     return {
-      videoUrl: match[0].replace(/[),]+$/, ""),
+      imageUrl: match[0].replace(/[),]+$/, ""),
       decodedResponse: decoded
     };
   }
@@ -307,7 +310,7 @@ async function runGeneratedTest(config) {
     
     // 步骤1: 获取 recaptcha token
     console.log("🔐 获取 reCAPTCHA token...");
-    const recaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
+    const recaptchaToken = await getRecaptchaToken("IMAGE_GENERATION");
     console.log("✅ reCAPTCHA token 获取成功");
     
     // 步骤2: 批量上传参考图片
@@ -326,57 +329,56 @@ async function runGeneratedTest(config) {
     console.log("✅ 所有图片上传完成！");
     console.log("  - 图片UUIDs:", imageUUIDs);
     
-    // 步骤3: 创建多图生视频任务 (rpcids: MZZa6b)
-    console.log("📤 创建多图生视频任务...");
+    // 步骤3: 创建多图生图任务 (rpcids: ogiZ0b)
+    console.log("📤 创建多图生图任务...");
     
     const uuid1 = generateUUID().toUpperCase();
     const uuid2 = generateUUID().toUpperCase();
+    const uuid3 = generateUUID().toUpperCase();
     
-    // 构建图片引用数组
-    const imageReferences = imageUUIDs.map(uuid => [null, uuid]);
+    // 构建图片引用数组，格式：[[uuid, null, null, null, 1], [uuid2, null, null, null, 1]]
+    const imageReferences = imageUUIDs.map(uuid => [uuid, null, null, null, 1]);
+    
+    // 生成随机数（观察到的范围：1654995980）
+    const randomNumber = Math.floor(Math.random() * 2000000000);
     
     console.log("  - 图片引用数组:", JSON.stringify(imageReferences));
-    console.log("  - 横竖比例代码:", aspectRatioCode);
+    console.log("  - 比例代码:", ratioValue);
+    console.log("  - 随机数:", randomNumber);
     console.log("  - UUID1:", uuid1);
     console.log("  - UUID2:", uuid2);
+    console.log("  - UUID3:", uuid3);
     
-    // 按照你提供的原始例子的精确结构构建
-    // 原始: [[[[null,null,[[[\"竖版：在跑\"]]]],[[null,\"uuid\"]],\"abra_r2v_10s\",1,null,[null,null,null,null,\"UUID1\",\"UUID2\"]]],[null,22,...],[\"UUID2\",2]]
-    // 注意：最外层需要再包一层数组
+    // 按照抓包的精确结构构建 payload
+    // [null, [[null, null, [[uuid1, null, null, null, 1], [uuid2, ...]], randomNumber, ratioValue, "GEM_PIX_2", null, [recaptcha数组], [[[prompt]]], null, null, null, uuid1, uuid2]], 1, [recaptcha数组], [uuid3]]
     const createPayloadArray = [
+      null,
       [
         [
-          [
-            null,
-            null,
-            [[[prompt]]]
-          ],
-          imageReferences,
-          "abra_r2v_10s",
-          aspectRatioCode,  // 1=竖版(9:16), 2=横版(16:9)
           null,
-          [null, null, null, null, uuid1, uuid2]
+          null,
+          imageReferences,
+          randomNumber,
+          ratioValue,
+          modelName,
+          null,
+          [null, 22, null, null, null, projectId, null, null, null, null, [recaptchaToken, 1]],
+          [[[prompt]]],
+          null,
+          null,
+          null,
+          uuid1,
+          uuid2
         ]
       ],
-      [
-        null,
-        22,
-        null,
-        null,
-        null,
-        projectId,
-        null,
-        null,
-        null,
-        null,
-        [recaptchaToken, 1]
-      ],
-      [uuid2, 2]
+      1,
+      [null, 22, null, null, null, projectId, null, null, null, null, [recaptchaToken, 1]],
+      [uuid3]
     ];
     
     console.log("  - 完整payload预览:", JSON.stringify(createPayloadArray).substring(0, 200) + "...");
 
-    const createResponse = await sendBatchExecute("MZZa6b", createPayloadArray, params, projectId);
+    const createResponse = await sendBatchExecute("ogiZ0b", createPayloadArray, params, projectId);
     
     console.log("📋 原始响应:", createResponse.substring(0, 500));
     
@@ -385,189 +387,88 @@ async function runGeneratedTest(config) {
     if (!createParsed || createParsed.length === 0) {
       return { 
         ok: false, 
-        error: "创建视频任务失败：响应为空",
+        error: "创建图片任务失败：响应为空",
         rawResponse: createResponse.substring(0, 1000)
       };
     }
     
-    let mediaUUID = null;
-    
-    // 从 MZZa6b 响应中提取 mediaUUID（第二个 UUID）
+    // 检查是否有错误响应
     for (const item of createParsed) {
-      if (item && item[0] === "wrb.fr" && item[1] === "MZZa6b" && item[2]) {
-        const responseStr = String(item[2]);
-        const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-        const allUUIDs = responseStr.match(uuidPattern);
-        
-        if (allUUIDs && allUUIDs.length >= 2) {
-          mediaUUID = allUUIDs[1];
-          console.log("✅ 成功提取视频媒体UUID:", mediaUUID);
-          console.log("  - 找到的所有UUID:", allUUIDs.slice(0, 6));
-        }
-        break;
-      }
-    }
-    
-    if (!mediaUUID) {
-      return { 
-        ok: false, 
-        error: "创建视频任务失败：无法提取媒体UUID",
-        createParsed: JSON.stringify(createParsed),
-        rawResponse: createResponse
-      };
-    }
-    
-    console.log("✅ 多图生视频任务创建成功！");
-    console.log("  - 媒体UUID:", mediaUUID);
-    
-    // 步骤4: 轮询任务状态 (rpcids: jwpduf)
-    console.log("⏳ 开始轮询任务状态...");
-    
-    const maxPolls = 60;
-    const pollInterval = 5000;
-    let pollCount = 0;
-    let taskStatus = null;
-    let isComplete = false;
-    
-    while (pollCount < maxPolls && !isComplete) {
-      pollCount++;
-      console.log(`🔄 轮询第 ${pollCount}/${maxPolls} 次...`);
-      
-      const pollPayloadArray = [null, null, [[mediaUUID]]];
-      const pollResponse = await sendBatchExecute("jwpduf", pollPayloadArray, params, projectId);
-      const pollParsed = parseBatchExecuteResponse(pollResponse);
-      
-      if (pollParsed && pollParsed.length > 0) {
-        for (const item of pollParsed) {
-          if (item && item[0] === "wrb.fr" && item[1] === "jwpduf" && item[2]) {
-            try {
-              const data = JSON.parse(item[2]);
-              if (data && data[2] && data[2][0] && data[2][0][5] && data[2][0][5][8]) {
-                const statusInfo = data[2][0][5][8];
-                
-                // statusInfo 可能是数字或数组
-                // 成功: 3 或 6
-                // 失败: [4, [3, "ERROR_CODE"], ["DETAIL"]]
-                if (Array.isArray(statusInfo)) {
-                  taskStatus = statusInfo[0];
-                  
-                  // 检查是否有错误信息（状态码为 4 表示失败）
-                  if (taskStatus === 4 && statusInfo[1] && Array.isArray(statusInfo[1])) {
-                    const errorCode = statusInfo[1][1] || "UNKNOWN_ERROR";
-                    const errorDetails = statusInfo[2] ? statusInfo[2].join(", ") : "";
-                    const errorMessage = errorDetails ? 
-                      `${errorCode}: ${errorDetails}` : 
-                      errorCode;
-                    
-                    console.error("❌ 视频生成失败:", errorMessage);
-                    
-                    return {
-                      ok: false,
-                      error: `视频生成失败: ${errorMessage}`,
-                      errorCode,
-                      errorDetails: statusInfo[2] || [],
-                      mediaUUID,
-                      pollCount
-                    };
-                  }
-                } else {
-                  taskStatus = statusInfo;
-                }
-                
-                console.log("  - 当前状态:", taskStatus);
-                
-                // 状态 3 表示完成
-                if (taskStatus === 3) {
-                  isComplete = true;
-                  console.log("✅ 任务完成！");
-                  break;
-                }
-                
-                // 状态 6 表示处理中
-                if (taskStatus === 6) {
-                  console.log("  - 任务处理中...");
+      if (item && item[0] === "wrb.fr" && item[1] === "ogiZ0b") {
+        // 检查是否包含错误信息
+        if (item[5] && Array.isArray(item[5])) {
+          const errorInfo = item[5];
+          // errorInfo 格式: [7, null, [["type.googleapis.com/google.rpc.ErrorInfo", ["PUBLIC_ERROR_UNUSUAL_ACTIVITY"]]]]
+          if (errorInfo[0] === 7 && errorInfo[2] && Array.isArray(errorInfo[2])) {
+            const errorDetails = errorInfo[2];
+            let errorCode = "UNKNOWN_ERROR";
+            
+            for (const detail of errorDetails) {
+              if (Array.isArray(detail) && detail.length >= 2) {
+                if (detail[0] === "type.googleapis.com/google.rpc.ErrorInfo" && Array.isArray(detail[1])) {
+                  errorCode = detail[1][0] || errorCode;
                 }
               }
-            } catch (e) {
-              console.warn("⚠️ 解析轮询响应失败:", e.message);
             }
+            
+            console.error("❌ 图片生成失败:", errorCode);
+            
+            return {
+              ok: false,
+              error: `图片生成失败: ${errorCode}`,
+              errorCode,
+              errorDetails: errorInfo,
+              elapsedMs: Date.now() - startTime,
+              input: {
+                prompt,
+                referenceImageCount: referenceImageUrls.length,
+                referenceImageUrls,
+                ratio,
+                ratioValue
+              },
+              timestamp: new Date().toISOString()
+            };
           }
         }
       }
-      
-      if (!isComplete && pollCount < maxPolls) {
-        await new Promise(resolve => setTimeout(resolve, pollInterval));
-      }
     }
     
-    if (!isComplete) {
+    // 如果没有错误，尝试提取图片URL
+    const { imageUrl, decodedResponse } = extractImageUrl(createResponse);
+    
+    if (!imageUrl) {
       return {
         ok: false,
-        error: `任务超时：轮询 ${maxPolls} 次后仍未完成`,
-        mediaUUID,
-        lastStatus: taskStatus
+        error: "无法从响应中提取图片URL",
+        decodedResponse: decodedResponse.substring(0, 1000),
+        rawResponse: createResponse.substring(0, 1000)
       };
     }
     
-    // 步骤5: 等待5秒让视频地址准备完成
-    console.log("⏳ 等待视频地址准备...");
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // 步骤6: 获取视频URL (rpcids: as29s)
-    console.log("🎬 获取视频URL...");
-    
-    const maxUrlAttempts = 3;
-    let videoUrl = null;
-    
-    for (let attempt = 1; attempt <= maxUrlAttempts; attempt++) {
-      console.log(`🔍 正在读取视频地址，第 ${attempt}/${maxUrlAttempts} 次`);
-      
-      const urlPayloadArray = [mediaUUID];
-      const urlResponse = await sendBatchExecute("as29s", urlPayloadArray, params, projectId);
-      
-      const parsed = extractVideoUrl(urlResponse);
-      if (parsed.videoUrl) {
-        videoUrl = parsed.videoUrl;
-        console.log("✅ 视频地址获取成功！");
-        console.log("🎬 视频地址:", videoUrl);
-        break;
-      }
-      
-      if (attempt < maxUrlAttempts) {
-        console.log("⚠️ 未找到视频地址，5秒后重试...");
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
-    
-    if (!videoUrl) {
-      return {
-        ok: false,
-        error: "无法获取视频URL",
-        mediaUUID
-      };
-    }
+    console.log("✅ 图片生成成功！");
+    console.log("🖼️ 图片地址:", imageUrl);
     
     const elapsedMs = Date.now() - startTime;
     
     return {
       ok: true,
-      message: "多图生视频任务完成",
+      message: "多参考图生图任务完成",
       elapsedMs,
       elapsedFormatted: `${Math.floor(elapsedMs / 1000)}秒`,
       input: { 
         prompt,
         referenceImageCount: referenceImageUrls.length,
         referenceImageUrls,
-        aspectRatio,
-        aspectRatioCode
+        ratio,
+        ratioValue
       },
       result: {
         projectId,
         imageUUIDs,
-        mediaUUID,
-        videoUrl,
-        pollCount,
-        finalStatus: taskStatus
+        imageUrl,
+        uuid1,
+        uuid2,
+        uuid3
       },
       timestamp: new Date().toISOString()
     };

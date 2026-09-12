@@ -23,6 +23,8 @@
       .health-list { display: flex; flex-wrap: wrap; gap: 6px; }
       .health-item { cursor: default; }
       .output-cell { width: 220px; max-width: 220px; }
+      .timeline-cell { cursor: pointer; }
+      .timeline-cell button { text-decoration: underline; }
       .media-preview-stage { min-height: 240px; max-height: calc(100vh - 210px); background: #111; }
       .media-preview-stage img,
       .media-preview-stage video { display: block; max-width: 100%; max-height: calc(100vh - 210px); object-fit: contain; }
@@ -277,6 +279,28 @@
       </div>
     </div>
 
+    <div class="modal fade" id="timelineModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title mono" id="timelineTitle">任务时间线</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+          </div>
+          <div class="modal-body">
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead><tr><th>时间节点</th><th>时间</th><th>距上一节点</th></tr></thead>
+                <tbody id="timelineBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal fade" id="previewModal" tabindex="-1" aria-labelledby="previewTitle" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content">
@@ -384,6 +408,13 @@
         const finished = parseTime(finishedAt);
         if (Number.isNaN(created.getTime()) || Number.isNaN(finished.getTime())) return "";
         return `${Math.max(0, Math.round((finished.getTime() - created.getTime()) / 1000))}s`;
+      }
+
+      function formatTimelineTime(milliseconds) {
+        const date = new Date(milliseconds);
+        if (Number.isNaN(date.getTime())) return "-";
+        const base = date.toLocaleString("zh-CN", { hour12: false });
+        return `${base}.${String(date.getMilliseconds()).padStart(3, "0")}`;
       }
 
       function resultOutput(item) {
@@ -568,7 +599,7 @@
               <td class="mono small">${escapeHtml(formatTime(x.created_at))}</td>
               <td class="mono small">${escapeHtml(formatTime(x.started_at))}</td>
               <td class="mono small">${escapeHtml(formatTime(x.finished_at))}</td>
-              <td class="mono small">${escapeHtml(formatDuration(x.created_at, x.finished_at))}</td>
+              <td class="timeline-cell" data-timeline-detail="${idx}" title="点击查看阶段时间线"><button type="button" class="btn btn-link btn-sm mono p-0" data-timeline-detail="${idx}">${escapeHtml(formatDuration(x.created_at, x.finished_at) || "-")}</button></td>
               <td><button class="btn btn-outline-primary btn-sm" data-payload-detail="${idx}">详情</button></td>
               <td><button class="btn btn-outline-success btn-sm" data-upstream-payload-detail="${idx}">详情</button></td>
               <td><button class="btn btn-outline-secondary btn-sm" data-detail="${idx}">详情</button></td>
@@ -830,6 +861,24 @@
         const previewBtn = e.target?.closest?.("[data-preview-url]");
         if (previewBtn) {
           showPreview(previewBtn.getAttribute("data-preview-url") || "");
+          return;
+        }
+        const timelineBtn = e.target?.closest?.("[data-timeline-detail]");
+        if (timelineBtn) {
+          const item = lastItems[Number(timelineBtn.getAttribute("data-timeline-detail"))];
+          if (!item) return;
+          const timeline = Array.isArray(item.timeline) ? item.timeline : [];
+          document.getElementById("timelineTitle").textContent = `${item.task_id || item.job_id || "任务"} 时间线`;
+          let previous = null;
+          document.getElementById("timelineBody").innerHTML = timeline.length ? timeline.map((event) => {
+            const at = Number(event?.at);
+            const current = Number.isFinite(at) ? at : null;
+            const elapsed = current != null && previous != null ? `${((current - previous) / 1000).toFixed(3)}s` : "-";
+            if (current != null) previous = current;
+            const error = event?.error ? `<div class="small text-danger mt-1">${escapeHtml(event.error)}</div>` : "";
+            return `<tr><td>${escapeHtml(event?.label || event?.key || "-")}${error}</td><td class="mono text-nowrap">${escapeHtml(current != null ? formatTimelineTime(current) : "-")}</td><td class="mono">${escapeHtml(elapsed)}</td></tr>`;
+          }).join("") : `<tr><td colspan="3" class="text-center text-muted py-4">该任务没有详细时间节点（可能是在时间线功能上线前创建）</td></tr>`;
+          bootstrap.Modal.getOrCreateInstance(document.getElementById("timelineModal")).show();
           return;
         }
         const payloadBtn = e.target?.closest?.("[data-payload-detail]");

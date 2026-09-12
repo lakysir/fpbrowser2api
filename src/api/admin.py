@@ -528,6 +528,14 @@ def _watermark_task_service_sources() -> List[Dict[str, str]]:
                 "http://192.168.1.14:8791",
             ).strip(),
         },
+        {
+            "id": "quinary",
+            "name": os.getenv("WATERMARK_TASK_QUINARY_SERVICE_NAME", "4号机").strip() or "4号机",
+            "url": os.getenv(
+                "WATERMARK_TASK_QUINARY_SERVICE_URL",
+                "http://192.168.1.4:8791",
+            ).strip(),
+        },
     ]
     dispatch_url = _comfyui_dispatch_base_url()
     if dispatch_url:

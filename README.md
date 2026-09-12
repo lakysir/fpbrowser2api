@@ -3,7 +3,7 @@
 基于 RoxyBrowser 指纹浏览器的 AI 视频/图片自动化任务框架。项目通过指纹浏览器保活账号、隔离环境，并在真实页面上下文中执行插件自动化逻辑，把 Sora、Google Flow/Veo、Seedance、Grok、ChatGPT 图片等站点能力封装成可管理、可调度、可对外调用的 API。
 
 > QQ 交流群：1035463132
-> 操作视频：<https://pub-407b28efb54e443e8042f959e4b0067c.r2.dev/fpbrowser_guide.mp4>
+> 操作视频：<https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2>
 
 ## 重要声明
 
